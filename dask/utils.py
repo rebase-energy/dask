@@ -1264,7 +1264,7 @@ def is_arraylike(x):
         # support for them is useful in scenerios where we mostly call `map_partitions`
         # or `map_blocks` with scikit-learn functions on dask arrays and dask dataframes.
         # https://github.com/dask/dask/pull/3738
-        and (is_duck_array or "scipy.sparse" in typename(type(x)))
+        and (is_duck_array or "scipy.sparse" in typename(type(x)) or "xarray.core" in typename(type(x)))
     )
 
 
@@ -1928,3 +1928,11 @@ def cached_cumsum(seq, initial_zero=False):
         # Construct a temporary tuple, and look up by value.
         result = _cumsum(tuple(seq), initial_zero)
     return result
+
+
+def unique(lst):
+    unique_lst = []
+    for l in lst:
+        if l not in unique_lst:
+            unique_lst.append(l)
+    return unique_lst

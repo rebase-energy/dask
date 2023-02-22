@@ -70,6 +70,7 @@ from ..utils import (
     ndimlist,
     parse_bytes,
     typename,
+    unique,
 )
 from ..widgets import get_template
 from . import chunk
@@ -5358,12 +5359,41 @@ def _get_axis(indexes):
     x2 = x[tuple(indexes)]
     return x2.shape.index(1)
 
-
 def _vindex_slice(block, points):
     """Pull out point-wise slices from block"""
     points = [p if isinstance(p, slice) else list(p) for p in points]
-    return block[tuple(points)]
+    if isinstance(block, np.ndarray):
+        res = block[tuple(points)]
+    else:
+        arr = from_array(block, chunks=block.chunks, fancy=False, asarray=False)
+        axis = [ix for ix, p in enumerate(points) if isinstance(p, list) and len(p) == 1]
+        axis = axis[0] if len(axis) > 0 else None
+        # replace lists with consecutive indices with slices
+        points_repl = []
+        for p in points:
+            current_filter = p
+            if isinstance(p, list):
+                p_arr = np.asarray(p)
+                if len(p_arr) > 1 and all(p_arr[1:]-p_arr[:-1] == 1):
+                    current_filter = slice(p_arr[0], p_arr[-1]+1, 1)
+            if not isinstance(current_filter, list):
+                current_filter = [current_filter]
+            points_repl.append(current_filter)
+        groups = unique(product(zip(*points_repl)))
+        blocks = []
+        for current_group_keys in groups:
+            for current_key in current_group_keys:
+                current_block = arr[tuple(current_key)]
+                materialized_block = np.asarray(current_block)
+                if axis is not None:
+                    materialized_block = np.expand_dims(materialized_block, axis=axis)
+                blocks.append(materialized_block)
 
+        if len(blocks) > 1:
+            res = np.vstack(blocks)
+        else:
+            res = blocks[0]
+    return res
 
 def _vindex_transpose(block, axis):
     """Rotate block so that points are on the first dimension"""
