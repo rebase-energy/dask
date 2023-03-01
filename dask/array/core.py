@@ -70,7 +70,6 @@ from ..utils import (
     ndimlist,
     parse_bytes,
     typename,
-    unique,
 )
 from ..widgets import get_template
 from . import chunk
@@ -5362,53 +5361,10 @@ def _get_axis(indexes):
 def _vindex_slice(block, points):
     """Pull out point-wise slices from block"""
     points = [p if isinstance(p, slice) else list(p) for p in points]
-    if isinstance(block, np.ndarray):
-        res = block[tuple(points)]
+    if hasattr(block, "getitem_numpy_compat"):
+        return block.getitem_numpy_compat(tuple(points))
     else:
-        arr = from_array(block, chunks="auto", fancy=False, asarray=False)
-        axis = 0
-        list_to_slice_ix = []
-        for ix, p in enumerate(points):
-            if isinstance(p, slice):
-                axis += 1
-            else:
-                break
-        if axis>0 and any(isinstance(p, slice) for p in points[axis:]):
-            axis = 0
-
-        has_single_index_points = any(isinstance(p, list) and len(p)==1 for p in points)
-
-        max_list_len = max([0] + [len(p) for p in points if isinstance(p, list)])
-        # replace lists with consecutive indices with slices
-        points_repl = []
-        for ix, p in enumerate(points):
-            if isinstance(p, list):
-                p_arr = np.asarray(p)
-                if len(p_arr) > 1 and all(p_arr[1:]-p_arr[:-1] == 1) and has_single_index_points:
-                    list_to_slice_ix.append(ix)
-                    points_repl.append([slice(p_arr[0], p_arr[-1]+1, 1)] * max_list_len)
-                else:
-                    points_repl.append(p)
-            elif isinstance(p, slice):
-                points_repl.append([p] * max_list_len)
-            else:
-                raise NotImplementedError()
-        groups = unique(zip(*points_repl))
-        blocks = []
-        for current_key in groups:
-            current_block = arr[tuple(current_key)]
-            materialized_block = np.asarray(current_block)
-            if len(list_to_slice_ix)>0:
-                materialized_block = np.transpose(materialized_block, list_to_slice_ix + [ix for ix, _ in enumerate(materialized_block.shape) if ix not in list_to_slice_ix])
-            elif axis is not None:
-                materialized_block = np.expand_dims(materialized_block, axis=axis)
-            blocks.append(materialized_block)
-
-        if len(blocks) > 1:
-            res = np.concatenate(blocks, axis=axis)
-        else:
-            res = blocks[0]
-    return res
+        return block[tuple(points)]
 
 def _vindex_transpose(block, axis):
     """Rotate block so that points are on the first dimension"""

@@ -1928,11 +1928,3 @@ def cached_cumsum(seq, initial_zero=False):
         # Construct a temporary tuple, and look up by value.
         result = _cumsum(tuple(seq), initial_zero)
     return result
-
-
-def unique(lst):
-    unique_lst = []
-    for l in lst:
-        if l not in unique_lst:
-            unique_lst.append(l)
-    return unique_lst
