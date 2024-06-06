@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import uuid
 from fnmatch import fnmatch
@@ -8,14 +10,21 @@ import pandas as pd
 from fsspec.utils import build_name_function, stringify_path
 from tlz import merge
 
-from ... import config, multiprocessing
-from ...base import compute_as_if_collection, get_scheduler, tokenize
-from ...delayed import Delayed, delayed
-from ...highlevelgraph import HighLevelGraph
-from ...layers import DataFrameIOLayer
-from ...utils import get_scheduler_lock
-from ..core import DataFrame, new_dd_object
-from .io import _link
+from dask import config
+from dask.base import (
+    compute_as_if_collection,
+    get_scheduler,
+    named_schedulers,
+    tokenize,
+)
+from dask.dataframe.backends import dataframe_creation_dispatch
+from dask.dataframe.core import DataFrame, Scalar
+from dask.dataframe.io.io import _link, from_map
+from dask.dataframe.io.utils import DataFrameIOFunction, SupportsLock
+from dask.highlevelgraph import HighLevelGraph
+from dask.utils import get_scheduler_lock
+
+MP_GET = named_schedulers.get("processes", object())
 
 
 def _pd_to_hdf(pd_to_hdf, lock, args, kwargs=None):
@@ -42,7 +51,7 @@ def to_hdf(
     name_function=None,
     compute=True,
     lock=None,
-    dask_kwargs={},
+    dask_kwargs=None,
     **kwargs,
 ):
     """Store Dask Dataframe to Hierarchical Data Format (HDF) files
@@ -77,7 +86,7 @@ def to_hdf(
     compute : bool
         Whether or not to execute immediately.  If False then this returns a
         ``dask.Delayed`` value.
-    lock : Lock, optional
+    lock : bool, Lock, optional
         Lock to use to prevent concurrency issues.  By default a
         ``threading.Lock``, ``multiprocessing.Lock`` or ``SerializableLock``
         will be used depending on your scheduler if a lock is required. See
@@ -131,9 +140,12 @@ def to_hdf(
     read_hdf:
     to_parquet:
     """
+    if dask_kwargs is None:
+        dask_kwargs = {}
+
     name = "to-hdf-" + uuid.uuid1().hex
 
-    pd_to_hdf = getattr(df._partition_type, "to_hdf")
+    pd_to_hdf = df._partition_type.to_hdf
 
     single_file = True
     single_node = True
@@ -181,9 +193,18 @@ def to_hdf(
 
     # If user did not specify scheduler and write is sequential default to the
     # sequential scheduler. otherwise let the _get method choose the scheduler
+    try:
+        from distributed import default_client
+
+        default_client()
+        client_available = True
+    except (ImportError, ValueError):
+        client_available = False
+
     if (
         scheduler is None
         and not config.get("scheduler", None)
+        and not client_available
         and single_node
         and single_file
     ):
@@ -194,25 +215,34 @@ def to_hdf(
     if lock is None:
         if not single_node:
             lock = True
-        elif not single_file and _actual_get is not multiprocessing.get:
+        elif not single_file and _actual_get is not MP_GET:
             # if we're writing to multiple files with the multiprocessing
             # scheduler we don't need to lock
             lock = True
         else:
             lock = False
-    if lock:
+
+    # TODO: validation logic to ensure that provided locks are compatible with the scheduler
+    if isinstance(lock, bool) and lock:
         lock = get_scheduler_lock(df, scheduler=scheduler)
-
-    kwargs.update({"format": "table", "mode": mode, "append": append})
-
+    elif lock:
+        assert isinstance(lock, SupportsLock)
     dsk = dict()
 
     i_name = name_function(0)
+    kwargs.update(
+        {
+            "format": "table",
+            "mode": mode,
+            "append": append,
+            "key": key.replace("*", i_name),
+        }
+    )
     dsk[(name, 0)] = (
         _pd_to_hdf,
         pd_to_hdf,
         lock,
-        [(df._name, 0), fmt_obj(path, i_name), key.replace("*", i_name)],
+        [(df._name, 0), fmt_obj(path, i_name)],
         kwargs,
     )
 
@@ -229,31 +259,35 @@ def to_hdf(
 
     for i in range(1, df.npartitions):
         i_name = name_function(i)
+        kwargs2["key"] = key.replace("*", i_name)
         task = (
             _pd_to_hdf,
             pd_to_hdf,
             lock,
-            [(df._name, i), fmt_obj(path, i_name), key.replace("*", i_name)],
-            kwargs2,
+            [(df._name, i), fmt_obj(path, i_name)],
+            kwargs2.copy(),
         )
         if single_file:
             link_dep = i - 1 if single_node else 0
             task = (_link, (name, link_dep), task)
         dsk[(name, i)] = task
 
-    dsk = merge(df.dask, dsk)
     if single_file and single_node:
         keys = [(name, df.npartitions - 1)]
     else:
         keys = [(name, i) for i in range(df.npartitions)]
 
+    final_name = name + "-final"
+    dsk[(final_name, 0)] = (lambda x: None, keys)
+    graph = HighLevelGraph.from_collections((name, 0), dsk, dependencies=[df])
+
     if compute:
         compute_as_if_collection(
-            DataFrame, dsk, keys, scheduler=scheduler, **dask_kwargs
+            DataFrame, graph, keys, scheduler=scheduler, **dask_kwargs
         )
         return filenames
     else:
-        return delayed([Delayed(k, dsk) for k in keys])
+        return Scalar(graph, final_name, "")
 
 
 dont_use_fixed_error_message = """
@@ -270,7 +304,7 @@ and stopping index per file, or starting and stopping index of the global
 dataset."""
 
 
-class HDFFunctionWrapper:
+class HDFFunctionWrapper(DataFrameIOFunction):
     """
     HDF5 Function-Wrapper Class
 
@@ -278,12 +312,16 @@ class HDFFunctionWrapper:
     """
 
     def __init__(self, columns, dim, lock, common_kwargs):
-        self.columns = columns
+        self._columns = columns
         self.lock = lock
         self.common_kwargs = common_kwargs
         self.dim = dim
         if columns and dim > 1:
             self.common_kwargs = merge(common_kwargs, {"columns": columns})
+
+    @property
+    def columns(self):
+        return self._columns
 
     def project_columns(self, columns):
         """Return a new HDFFunctionWrapper object with
@@ -307,6 +345,7 @@ class HDFFunctionWrapper:
         return result
 
 
+@dataframe_creation_dispatch.register_inplace("pandas")
 def read_hdf(
     pattern,
     key,
@@ -409,7 +448,10 @@ def read_hdf(
     # Build metadata
     with pd.HDFStore(paths[0], mode=mode) as hdf:
         meta_key = _expand_key(key, hdf)[0]
-    meta = pd.read_hdf(paths[0], meta_key, mode=mode, stop=0)
+        try:
+            meta = pd.read_hdf(hdf, meta_key, stop=0)
+        except IndexError:  # if file is empty, don't set stop
+            meta = pd.read_hdf(hdf, meta_key)
     if columns is not None:
         meta = meta[columns]
 
@@ -424,18 +466,16 @@ def read_hdf(
         paths, key, start, stop, chunksize, sorted_index, mode
     )
 
-    # Construct Layer and Collection
-    label = "read-hdf-"
-    name = label + tokenize(paths, key, start, stop, sorted_index, chunksize, mode)
-    layer = DataFrameIOLayer(
-        name,
-        columns,
-        parts,
+    # Construct the output collection with from_map
+    return from_map(
         HDFFunctionWrapper(columns, meta.ndim, lock, common_kwargs),
-        label=label,
+        parts,
+        meta=meta,
+        divisions=divisions,
+        label="read-hdf",
+        token=tokenize(paths, key, start, stop, sorted_index, chunksize, mode),
+        enforce_metadata=False,
     )
-    graph = HighLevelGraph({name: layer}, {name: set()})
-    return new_dd_object(graph, name, meta, divisions)
 
 
 def _build_parts(paths, key, start, stop, chunksize, sorted_index, mode):
@@ -445,13 +485,11 @@ def _build_parts(paths, key, start, stop, chunksize, sorted_index, mode):
     parts = []
     global_divisions = []
     for path in paths:
-
         keys, stops, divisions = _get_keys_stops_divisions(
             path, key, stop, sorted_index, chunksize, mode
         )
 
         for k, s, d in zip(keys, stops, divisions):
-
             if d and global_divisions:
                 global_divisions = global_divisions[:-1] + d
             elif d:
@@ -540,6 +578,6 @@ def _get_keys_stops_divisions(path, key, stop, sorted_index, chunksize, mode):
     return keys, stops, divisions
 
 
-from ..core import _Frame
+from dask.dataframe.core import _Frame
 
 _Frame.to_hdf.__doc__ = to_hdf.__doc__

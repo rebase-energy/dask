@@ -34,6 +34,8 @@ codebase:
 
 - **Microsoft Azure Storage**: ``adl://``, ``abfs://`` or ``az://`` - Microsoft Azure Storage using adlfs_.
 
+- **Hugging Face**: ``hf://`` - Hugging Face Hub of datasets for AI, using the huggingface_hub_ library.
+
 - **HTTP(s)**: ``http://`` or ``https://`` for reading data directly from HTTP web servers.
 
 `fsspec`_ also provides other file systems that may be of interest to Dask users, such as
@@ -48,6 +50,7 @@ file system is assumed (same as ``file://``).
 .. _adlfs: https://github.com/dask/adlfs
 .. _gcsfs: https://gcsfs.readthedocs.io/en/latest/
 .. _PyArrow: https://arrow.apache.org/docs/python/
+.. _huggingface_hub: https://huggingface.co/docs/huggingface_hub
 
 Lower-level details on how Dask handles remote data is described
 below in the Internals section
@@ -86,6 +89,8 @@ to import, you can do
 
 Note that some backends appear twice, if they can be referenced with multiple
 protocol strings, like "http" and "https".
+
+.. _connect-to-remote-data-local:
 
 Local File System
 -----------------
@@ -133,6 +138,7 @@ variables. For more information on these, see the `PyArrow documentation`_.
 
 .. _PyArrow documentation: https://arrow.apache.org/docs/python/filesystems_deprecated.html#hadoop-file-system-hdfs
 
+.. _connect-to-remote-data-s3:
 
 Amazon S3
 ---------
@@ -210,6 +216,8 @@ for example, using `AlibabaCloud OSS`:
             "config_kwargs": {"s3": {"addressing_style": "virtual"}},
         })
 
+.. _connect-to-remote-data-gc:
+
 Google Cloud Storage
 --------------------
 
@@ -258,7 +266,12 @@ provided by the adlfs_ back-end.
 Authentication for ``adl`` requires ``tenant_id``, ``client_id`` and ``client_secret``
 in the ``storage_options`` dictionary.
 
-Authentication for ``abfs`` requires ``account_name`` and ``account_key`` in ``storage_options``.
+Authentication for ``abfs`` requires ``storage_options`` to contain ``account_name``,
+``tenant_id``, ``client_id`` and ``client_secret`` for the `RBAC and ACL`_ access models,
+or ``account_name`` and ``account_key`` for the `shared key`_ access model.
+
+.. _RBAC and ACL: https://docs.microsoft.com/en-us/azure/storage/blobs/data-lake-storage-access-control-model/
+.. _shared key: https://docs.microsoft.com/en-us/azure/storage/blobs/data-lake-storage-access-control-model#shared-key-and-shared-access-signature-sas-authorization
 
 HTTP(S)
 -------

@@ -1,5 +1,12 @@
+from __future__ import annotations
+
 try:
-    from .widgets import FILTERS, TEMPLATE_PATHS, get_environment, get_template
+    from dask.widgets.widgets import (
+        FILTERS,
+        TEMPLATE_PATHS,
+        get_environment,
+        get_template,
+    )
 
 except ImportError as e:
     msg = (

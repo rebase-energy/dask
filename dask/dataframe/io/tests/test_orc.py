@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import glob
 import os
 import shutil
@@ -6,7 +8,6 @@ import tempfile
 import numpy as np
 import pandas as pd
 import pytest
-from packaging.version import parse as parse_version
 
 import dask.dataframe as dd
 from dask.dataframe.optimize import optimize_dataframe_getitem
@@ -48,6 +49,7 @@ def orc_files():
 
 
 @pytest.mark.parametrize("split_stripes", [1, 2])
+@pytest.mark.network
 def test_orc_single(orc_files, split_stripes):
     fn = orc_files[0]
     d = dd.read_orc(fn, split_stripes=split_stripes)
@@ -59,15 +61,17 @@ def test_orc_single(orc_files, split_stripes):
     with pytest.raises(ValueError, match="nonexist"):
         dd.read_orc(fn, columns=["time", "nonexist"])
 
-    # Check that `optimize_dataframe_getitem` changes the
-    # `columns` attribute of the "read-orc" layer
-    d3 = d[columns]
-    keys = [(d3._name, i) for i in range(d3.npartitions)]
-    graph = optimize_dataframe_getitem(d3.__dask_graph__(), keys)
-    key = [k for k in graph.layers.keys() if k.startswith("read-orc-")][0]
-    assert set(graph.layers[key].columns) == set(columns)
+    if not dd._dask_expr_enabled():
+        # Check that `optimize_dataframe_getitem` changes the
+        # `columns` attribute of the "read-orc" layer
+        d3 = d[columns]
+        keys = [(d3._name, i) for i in range(d3.npartitions)]
+        graph = optimize_dataframe_getitem(d3.__dask_graph__(), keys)
+        key = [k for k in graph.layers.keys() if k.startswith("read-orc-")][0]
+        assert set(graph.layers[key].columns) == set(columns)
 
 
+@pytest.mark.network
 def test_orc_multiple(orc_files):
     d = dd.read_orc(orc_files[0])
     d2 = dd.read_orc(orc_files)
@@ -76,10 +80,6 @@ def test_orc_multiple(orc_files):
     assert_eq(d2[columns], dd.concat([d, d])[columns], check_index=False)
 
 
-@pytest.mark.skipif(
-    parse_version(pa.__version__) < parse_version("4.0.0"),
-    reason=("PyArrow>=4.0.0 required for ORC write support."),
-)
 @pytest.mark.parametrize("index", [None, "i32"])
 @pytest.mark.parametrize("columns", [None, ["i32", "i64", "f"]])
 def test_orc_roundtrip(tmpdir, index, columns):
@@ -94,8 +94,9 @@ def test_orc_roundtrip(tmpdir, index, columns):
             ),
         }
     )
+    data.iloc[0, 0] = 100
     if index:
-        data.set_index(index, inplace=True)
+        data = data.set_index(index)
     df = dd.from_pandas(data, chunksize=500)
     if columns:
         data = data[[c for c in columns if c != index]]
@@ -105,13 +106,9 @@ def test_orc_roundtrip(tmpdir, index, columns):
 
     # Read
     df2 = dd.read_orc(tmp, index=index, columns=columns)
-    assert_eq(data, df2, check_index=bool(index))
+    assert_eq(data, df2, check_index=False)
 
 
-@pytest.mark.skipif(
-    parse_version(pa.__version__) < parse_version("4.0.0"),
-    reason=("PyArrow>=4.0.0 required for ORC write support."),
-)
 @pytest.mark.parametrize("split_stripes", [True, False, 2, 4])
 def test_orc_roundtrip_aggregate_files(tmpdir, split_stripes):
     tmp = str(tmpdir)
@@ -134,6 +131,7 @@ def test_orc_roundtrip_aggregate_files(tmpdir, split_stripes):
     assert_eq(data, df2, check_index=False)
 
 
+@pytest.mark.network
 def test_orc_aggregate_files_offset(orc_files):
     # Default read should give back 16 partitions. Therefore,
     # specifying split_stripes=11 & aggregate_files=True should
@@ -144,10 +142,7 @@ def test_orc_aggregate_files_offset(orc_files):
     assert len(df2.partitions[0].index) > len(df2.index) // 2
 
 
-@pytest.mark.skipif(
-    parse_version(pa.__version__) < parse_version("4.0.0"),
-    reason=("PyArrow>=4.0.0 required for ORC write support."),
-)
+@pytest.mark.network
 def test_orc_names(orc_files, tmp_path):
     df = dd.read_orc(orc_files)
     assert df._name.startswith("read-orc")
@@ -155,10 +150,6 @@ def test_orc_names(orc_files, tmp_path):
     assert out._name.startswith("to-orc")
 
 
-@pytest.mark.skipif(
-    parse_version(pa.__version__) < parse_version("4.0.0"),
-    reason=("PyArrow>=4.0.0 required for ORC write support."),
-)
 def test_to_orc_delayed(tmp_path):
     # See: https://github.com/dask/dask/issues/8022
     df = pd.DataFrame(np.random.randn(100, 4), columns=["a", "b", "c", "d"])

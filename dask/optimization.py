@@ -1,10 +1,14 @@
+from __future__ import annotations
+
 import math
 import numbers
-import uuid
+from collections.abc import Iterable
 from enum import Enum
+from typing import Any
 
-from . import config, core, utils
-from .core import (
+from dask import config, core, utils
+from dask.base import normalize_token, tokenize
+from dask.core import (
     flatten,
     get_dependencies,
     ishashable,
@@ -13,7 +17,7 @@ from .core import (
     subs,
     toposort,
 )
-from .utils_test import add, inc  # noqa: F401
+from dask.typing import Graph, Key
 
 
 def cull(dsk, keys):
@@ -24,6 +28,11 @@ def cull(dsk, keys):
 
     Examples
     --------
+    >>> def inc(x):
+    ...     return x + 1
+
+    >>> def add(x, y):
+    ...     return x + y
 
     >>> d = {'x': 1, 'y': (inc, 'x'), 'out': (add, 'x', 10)}
     >>> dsk, dependencies = cull(d, 'out')
@@ -102,6 +111,12 @@ def fuse_linear(dsk, keys=None, dependencies=None, rename_keys=True):
 
     Examples
     --------
+    >>> def inc(x):
+    ...     return x + 1
+
+    >>> def add(x, y):
+    ...     return x + y
+
     >>> d = {'a': 1, 'b': (inc, 'a'), 'c': (inc, 'b')}
     >>> dsk, dependencies = fuse(d)
     >>> dsk # doctest: +SKIP
@@ -235,6 +250,11 @@ def inline(dsk, keys=None, inline_constants=True, dependencies=None):
 
     Examples
     --------
+    >>> def inc(x):
+    ...     return x + 1
+
+    >>> def add(x, y):
+    ...     return x + y
 
     >>> d = {'x': 1, 'y': (inc, 'x'), 'z': (add, 'x', 'y')}
     >>> inline(d)       # doctest: +ELLIPSIS
@@ -294,6 +314,9 @@ def inline_functions(
 
     Examples
     --------
+    >>> inc = lambda x: x + 1
+    >>> add = lambda x, y: x + y
+    >>> double = lambda x: x * 2
     >>> dsk = {'out': (add, 'i', 'd'),  # doctest: +SKIP
     ...        'i': (inc, 'x'),
     ...        'd': (double, 'y'),
@@ -354,6 +377,9 @@ def functions_of(task):
 
     Examples
     --------
+    >>> inc = lambda x: x + 1
+    >>> add = lambda x, y: x + y
+    >>> mul = lambda x, y: x * y
     >>> task = (add, (mul, 1, 2), (inc, 3))  # doctest: +SKIP
     >>> functions_of(task)  # doctest: +SKIP
     set([add, mul, inc])
@@ -548,7 +574,10 @@ def fuse(
     if dependencies is None:
         deps = {k: get_dependencies(dsk, k, as_list=True) for k in dsk}
     else:
-        deps = dict(dependencies)
+        deps = {
+            k: v if isinstance(v, list) else get_dependencies(dsk, k, as_list=True)
+            for k, v in dependencies.items()
+        }
 
     rdeps = {}
     for k, vals in deps.items():
@@ -733,9 +762,9 @@ def fuse(
                     children_info = info_stack[-num_children:]
                     del info_stack[-num_children:]
                     for (
-                        cur_key,
-                        cur_task,
-                        cur_keys,
+                        _,
+                        _,
+                        _,
                         cur_height,
                         cur_width,
                         cur_num_nodes,
@@ -856,7 +885,7 @@ def fuse(
 def _inplace_fuse_subgraphs(dsk, keys, dependencies, fused_trees, rename_keys):
     """Subroutine of fuse.
 
-    Mutates dsk, depenencies, and fused_trees inplace"""
+    Mutates dsk, dependencies, and fused_trees inplace"""
     # locate all members of linear chains
     child2parent = {}
     unfusible = set()
@@ -931,7 +960,7 @@ class SubgraphCallable:
     ----------
     dsk : dict
         A dask graph
-    outkey : hashable
+    outkey : Dask key
         The output key from the graph
     inkeys : list
         A list of keys to be used as arguments to the callable.
@@ -939,20 +968,26 @@ class SubgraphCallable:
         The name to use for the function.
     """
 
-    __slots__ = ("dsk", "outkey", "inkeys", "name")
+    dsk: Graph
+    outkey: Key
+    inkeys: tuple[Key, ...]
+    name: str
+    __slots__ = tuple(__annotations__)
 
-    def __init__(self, dsk, outkey, inkeys, name=None):
+    def __init__(
+        self, dsk: Graph, outkey: Key, inkeys: Iterable[Key], name: str | None = None
+    ):
         self.dsk = dsk
         self.outkey = outkey
-        self.inkeys = inkeys
+        self.inkeys = tuple(inkeys)
         if name is None:
-            name = f"subgraph_callable-{uuid.uuid4()}"
+            name = "subgraph_callable-" + tokenize(dsk, outkey, self.inkeys)
         self.name = name
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return self.name
 
-    def __eq__(self, other):
+    def __eq__(self, other: Any) -> bool:
         return (
             type(self) is type(other)
             and self.name == other.name
@@ -960,16 +995,22 @@ class SubgraphCallable:
             and set(self.inkeys) == set(other.inkeys)
         )
 
-    def __ne__(self, other):
-        return not (self == other)
-
-    def __call__(self, *args):
+    def __call__(self, *args: Any) -> Any:
         if not len(args) == len(self.inkeys):
             raise ValueError("Expected %d args, got %d" % (len(self.inkeys), len(args)))
         return core.get(self.dsk, self.outkey, dict(zip(self.inkeys, args)))
 
-    def __reduce__(self):
-        return (SubgraphCallable, (self.dsk, self.outkey, self.inkeys, self.name))
+    def __reduce__(self) -> tuple:
+        return SubgraphCallable, (self.dsk, self.outkey, self.inkeys, self.name)
 
-    def __hash__(self):
-        return hash(tuple((self.outkey, frozenset(self.inkeys), self.name)))
+    def __hash__(self) -> int:
+        return hash((self.outkey, frozenset(self.inkeys), self.name))
+
+    def __dask_tokenize__(self) -> object:
+        return (
+            "SubgraphCallable",
+            normalize_token(self.dsk),
+            self.outkey,
+            self.inkeys,
+            self.name,
+        )

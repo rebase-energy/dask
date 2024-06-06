@@ -1,18 +1,25 @@
+from __future__ import annotations
+
 import copy
+from typing import TYPE_CHECKING, Literal
 
 from fsspec.core import get_fs_token_paths
 from fsspec.utils import stringify_path
-from packaging.version import parse as parse_version
 
-from ....base import compute_as_if_collection, tokenize
-from ....highlevelgraph import HighLevelGraph
-from ....layers import DataFrameIOLayer
-from ....utils import apply
-from ...core import DataFrame, Scalar, new_dd_object
-from .utils import ORCEngine
+from dask.base import compute_as_if_collection, tokenize
+from dask.dataframe.backends import dataframe_creation_dispatch
+from dask.dataframe.core import DataFrame, Scalar
+from dask.dataframe.io.io import from_map
+from dask.dataframe.io.orc.utils import ORCEngine
+from dask.dataframe.io.utils import DataFrameIOFunction
+from dask.highlevelgraph import HighLevelGraph
+from dask.utils import apply
+
+if TYPE_CHECKING:
+    from dask.dataframe.io.orc.arrow import ArrowORCEngine
 
 
-class ORCFunctionWrapper:
+class ORCFunctionWrapper(DataFrameIOFunction):
     """
     ORC Function-Wrapper Class
     Reads ORC data from disk to produce a partition.
@@ -20,10 +27,14 @@ class ORCFunctionWrapper:
 
     def __init__(self, fs, columns, schema, engine, index):
         self.fs = fs
-        self.columns = columns
+        self._columns = columns
         self.schema = schema
         self.engine = engine
         self.index = index
+
+    @property
+    def columns(self):
+        return self._columns
 
     def project_columns(self, columns):
         """Return a new ORCFunctionWrapper object with
@@ -32,7 +43,7 @@ class ORCFunctionWrapper:
         if columns == self.columns:
             return self
         func = copy.deepcopy(self)
-        func.columns = columns
+        func._columns = columns
         return func
 
     def __call__(self, parts):
@@ -44,25 +55,23 @@ class ORCFunctionWrapper:
         )
         if self.index:
             _df.set_index(self.index, inplace=True)
+
         return _df
 
 
-def _get_engine(engine, write=False):
-    # Get engine
+def _get_engine(
+    engine: Literal["pyarrow"] | ORCEngine,
+) -> type[ArrowORCEngine] | ORCEngine:
     if engine == "pyarrow":
-        import pyarrow as pa
-
-        from .arrow import ArrowORCEngine
-
-        if write and parse_version(pa.__version__) < parse_version("4.0.0"):
-            raise ValueError("to_orc is not supported for pyarrow<4.0.0")
+        from dask.dataframe.io.orc.arrow import ArrowORCEngine
 
         return ArrowORCEngine
     elif not isinstance(engine, ORCEngine):
-        raise TypeError("engine must be 'pyarrow', or an ORCEngine object")
+        raise TypeError("engine must be 'pyarrow' or an ORCEngine object")
     return engine
 
 
+@dataframe_creation_dispatch.register_inplace("pandas")
 def read_orc(
     path,
     engine="pyarrow",
@@ -80,7 +89,7 @@ def read_orc(
         Location of file(s), which can be a full URL with protocol
         specifier, and may include glob character if a single string.
     engine: 'pyarrow' or ORCEngine
-        Backend ORC engine to use for IO. Default is "pyarrow".
+        Backend ORC engine to use for I/O. Default is "pyarrow".
     columns: None or list(str)
         Columns to load. If None, loads all.
     index: str
@@ -128,18 +137,16 @@ def read_orc(
         aggregate_files,
     )
 
-    # Construct and return a Blockwise layer
-    label = "read-orc-"
-    output_name = label + tokenize(fs_token, path, columns)
-    layer = DataFrameIOLayer(
-        output_name,
-        columns,
-        parts,
+    # Construct the output collection with from_map
+    return from_map(
         ORCFunctionWrapper(fs, columns, schema, engine, index),
-        label=label,
+        parts,
+        meta=meta,
+        divisions=[None] * (len(parts) + 1),
+        label="read-orc",
+        token=tokenize(fs_token, path, columns),
+        enforce_metadata=False,
     )
-    graph = HighLevelGraph({output_name: layer}, {output_name: set()})
-    return new_dd_object(graph, output_name, meta, [None] * (len(parts) + 1))
 
 
 def to_orc(
@@ -163,9 +170,8 @@ def to_orc(
     path : string or pathlib.Path
         Destination directory for data.  Prepend with protocol like ``s3://``
         or ``hdfs://`` for remote data.
-    engine : 'pyarrow' or ORCEngine
-        Parquet library to use. If only one library is installed, it will use
-        that one; if both, it will use 'fastparquet'.
+    engine: 'pyarrow' or ORCEngine
+        Backend ORC engine to use for I/O. Default is "pyarrow".
     write_index : boolean, default True
         Whether or not to write the index. Defaults to True.
     storage_options : dict, default None
@@ -187,7 +193,7 @@ def to_orc(
     """
 
     # Get engine
-    engine = _get_engine(engine, write=True)
+    engine = _get_engine(engine)
 
     if hasattr(path, "name"):
         path = stringify_path(path)

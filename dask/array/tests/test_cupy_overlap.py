@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import numpy as np
 import pytest
 from packaging.version import parse as parse_version
@@ -42,7 +44,7 @@ def test_overlap_internal():
 def test_trim_internal():
     x = cupy.ones((40, 60))
     d = da.from_array(x, chunks=(10, 10), asarray=False)
-    e = da.overlap.trim_internal(d, axes={0: 1, 1: 2})
+    e = da.overlap.trim_internal(d, axes={0: 1, 1: 2}, boundary="reflect")
 
     assert e.chunks == ((8, 8, 8, 8), (6, 6, 6, 6, 6, 6))
 

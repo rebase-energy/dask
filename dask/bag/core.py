@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import io
 import itertools
 import math
@@ -5,7 +7,7 @@ import operator
 import uuid
 import warnings
 from collections import defaultdict
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from functools import partial, reduce, wraps
 from random import Random
 from urllib.request import urlopen
@@ -35,22 +37,32 @@ from tlz import (
     valmap,
 )
 
-from .. import config
-from ..base import DaskMethodsMixin, dont_optimize, replace_name_in_key, tokenize
-from ..context import globalmethod
-from ..core import flatten, get_dependencies, istask, quote, reverse_dict
-from ..delayed import Delayed, unpack_collections
-from ..highlevelgraph import HighLevelGraph
-from ..multiprocessing import get as mpget
-from ..optimization import cull, fuse, inline
-from ..sizeof import sizeof
-from ..utils import (
+from dask import config
+from dask.bag import chunk
+from dask.bag.avro import to_avro
+from dask.base import (
+    DaskMethodsMixin,
+    dont_optimize,
+    named_schedulers,
+    replace_name_in_key,
+    tokenize,
+)
+from dask.blockwise import blockwise
+from dask.context import globalmethod
+from dask.core import flatten, get_dependencies, istask, quote, reverse_dict
+from dask.delayed import Delayed, unpack_collections
+from dask.highlevelgraph import HighLevelGraph
+from dask.optimization import cull, fuse, inline
+from dask.sizeof import sizeof
+from dask.typing import Graph, NestedKeys, no_default
+from dask.utils import (
     apply,
     digit,
     ensure_bytes,
     ensure_dict,
     ensure_unicode,
     funcname,
+    get_default_shuffle_method,
     insert,
     iter_chunks,
     key_split,
@@ -58,10 +70,9 @@ from ..utils import (
     system_encoding,
     takes_multiple_arguments,
 )
-from . import chunk
-from .avro import to_avro
 
-no_default = "__no__default__"
+DEFAULT_GET = named_schedulers.get("processes", named_schedulers["sync"])
+
 no_result = type(
     "no_result", (object,), {"__slots__": (), "__reduce__": lambda self: "no_result"}
 )
@@ -355,20 +366,20 @@ class Item(DaskMethodsMixin):
                 f"Layer {self._layer} not in the HighLevelGraph's layers: {list(dsk.layers)}"
             )
 
-    def __dask_graph__(self):
+    def __dask_graph__(self) -> Graph:
         return self.dask
 
-    def __dask_keys__(self):
+    def __dask_keys__(self) -> NestedKeys:
         return [self.key]
 
-    def __dask_layers__(self):
+    def __dask_layers__(self) -> Sequence[str]:
         return (self._layer,)
 
     def __dask_tokenize__(self):
         return self.key
 
     __dask_optimize__ = globalmethod(optimize, key="bag_optimize", falsey=dont_optimize)
-    __dask_scheduler__ = staticmethod(mpget)
+    __dask_scheduler__ = staticmethod(DEFAULT_GET)
 
     def __dask_postcompute__(self):
         return finalize_item, ()
@@ -458,27 +469,27 @@ class Bag(DaskMethodsMixin):
     30
     """
 
-    def __init__(self, dsk, name, npartitions):
+    def __init__(self, dsk: Graph, name: str, npartitions: int):
         if not isinstance(dsk, HighLevelGraph):
             dsk = HighLevelGraph.from_collections(name, dsk, dependencies=[])
         self.dask = dsk
         self.name = name
         self.npartitions = npartitions
 
-    def __dask_graph__(self):
+    def __dask_graph__(self) -> Graph:
         return self.dask
 
-    def __dask_keys__(self):
+    def __dask_keys__(self) -> NestedKeys:
         return [(self.name, i) for i in range(self.npartitions)]
 
-    def __dask_layers__(self):
+    def __dask_layers__(self) -> Sequence[str]:
         return (self.name,)
 
     def __dask_tokenize__(self):
         return self.name
 
     __dask_optimize__ = globalmethod(optimize, key="bag_optimize", falsey=dont_optimize)
-    __dask_scheduler__ = staticmethod(mpget)
+    __dask_scheduler__ = staticmethod(DEFAULT_GET)
 
     def __dask_postcompute__(self):
         return finalize, ()
@@ -662,11 +673,11 @@ class Bag(DaskMethodsMixin):
         Examples
         --------
         >>> import dask.bag as db
-        >>> b = db.from_sequence(range(5))
-        >>> list(b.random_sample(0.5, 43))
-        [0, 3, 4]
-        >>> list(b.random_sample(0.5, 43))
-        [0, 3, 4]
+        >>> b = db.from_sequence(range(10))
+        >>> b.random_sample(0.5, 43).compute()
+        [0, 1, 3, 4, 7, 9]
+        >>> b.random_sample(0.5, 43).compute()
+        [0, 1, 3, 4, 7, 9]
         """
         if not 0 <= prob <= 1:
             raise ValueError("prob must be a number in the interval [0, 1]")
@@ -757,7 +768,7 @@ class Bag(DaskMethodsMixin):
         """
         name = "pluck-" + tokenize(self, key, default)
         key = quote(key)
-        if default == no_default:
+        if default is no_default:
             dsk = {
                 (name, i): (list, (pluck, key, (self.name, i)))
                 for i in range(self.npartitions)
@@ -1515,12 +1526,14 @@ class Bag(DaskMethodsMixin):
         if method is not None:
             raise Exception("The method= keyword has been moved to shuffle=")
         if shuffle is None:
-            shuffle = config.get("shuffle", None)
-        if shuffle is None:
-            if config.get("scheduler", None) in ("dask.distributed", "distributed"):
+            try:
+                shuffle = get_default_shuffle_method()
+            except ImportError:
                 shuffle = "tasks"
             else:
-                shuffle = "disk"
+                if shuffle == "p2p":
+                    # Not implemented for Bags
+                    shuffle = "tasks"
         if shuffle == "disk":
             return groupby_disk(
                 self, grouper, npartitions=npartitions, blocksize=blocksize
@@ -1608,7 +1621,15 @@ class Bag(DaskMethodsMixin):
             dsk = dfs.dask
 
         divisions = [None] * (self.npartitions + 1)
-        return dd.DataFrame(dsk, dfs.name, meta, divisions)
+        if not dd._dask_expr_enabled():
+            return dd.DataFrame(dsk, dfs.name, meta, divisions)
+        else:
+            from dask_expr import from_legacy_dataframe
+
+            from dask.dataframe.core import DataFrame
+
+            df = DataFrame(dsk, dfs.name, meta, divisions)
+            return from_legacy_dataframe(df)
 
     def to_delayed(self, optimize_graph=True):
         """Convert into a list of ``dask.delayed`` objects, one per partition.
@@ -1707,7 +1728,7 @@ class Bag(DaskMethodsMixin):
 
 
 def accumulate_part(binop, seq, initial, is_first=False):
-    if initial == no_default:
+    if initial is no_default:
         res = list(accumulate(binop, seq))
     else:
         res = list(accumulate(binop, seq, initial=initial))
@@ -1722,7 +1743,7 @@ def partition(grouper, sequence, npartitions, p, nelements=2**20):
         d = groupby(grouper, block)
         d2 = defaultdict(list)
         for k, v in d.items():
-            d2[abs(hash(k)) % npartitions].extend(v)
+            d2[abs(int(tokenize(k), 16)) % npartitions].extend(v)
         p.append(d2, fsync=True)
     return p
 
@@ -1763,12 +1784,15 @@ def from_sequence(seq, partition_size=None, npartitions=None):
     """
     seq = list(seq)
     if npartitions and not partition_size:
-        partition_size = int(math.ceil(len(seq) / npartitions))
+        if len(seq) <= 100:
+            partition_size = int(math.ceil(len(seq) / npartitions))
+        else:
+            partition_size = max(1, int(math.floor(len(seq) / npartitions)))
     if npartitions is None and partition_size is None:
-        if len(seq) < 100:
+        if len(seq) <= 100:
             partition_size = 1
         else:
-            partition_size = int(len(seq) / 100)
+            partition_size = max(1, math.ceil(math.sqrt(len(seq)) / math.sqrt(100)))
 
     parts = list(partition_all(partition_size, seq))
     name = "from_sequence-" + tokenize(seq, partition_size)
@@ -2230,13 +2254,11 @@ def map_partitions(func, *args, **kwargs):
     single graph, and then computes everything at once, and in some cases
     may be more efficient.
     """
-    name = "{}-{}".format(
-        funcname(func), tokenize(func, "map-partitions", *args, **kwargs)
-    )
-    dependencies = []
-
+    name = kwargs.pop("token", None) or funcname(func)
+    name = "{}-{}".format(name, tokenize(func, "map-partitions", *args, **kwargs))
     bags = []
     args2 = []
+    dependencies = []
     for a in args:
         if isinstance(a, Bag):
             bags.append(a)
@@ -2278,7 +2300,9 @@ def map_partitions(func, *args, **kwargs):
             (zip, list(bag_kwargs), [(b.name, n) for b in bag_kwargs.values()]),
         )
 
-    if kwargs:
+    if bag_kwargs:
+        # Avoid using `blockwise` when a key-word
+        # argument is being used to refer to a collection.
         dsk = {
             (name, n): (
                 apply,
@@ -2289,7 +2313,32 @@ def map_partitions(func, *args, **kwargs):
             for n in range(npartitions)
         }
     else:
-        dsk = {(name, n): (func,) + tuple(build_args(n)) for n in range(npartitions)}
+        pairs = []
+        numblocks = {}
+        for arg in args2:
+            # TODO: Allow interaction with Frame/Array
+            # collections with proper partitioning
+            if isinstance(arg, Bag):
+                pairs.extend([arg.name, "i"])
+                numblocks[arg.name] = (arg.npartitions,)
+            else:
+                pairs.extend([arg, None])
+        if other_kwargs and isinstance(other_kwargs, tuple):
+            # `other_kwargs` is a nested subgraph,
+            # designed to generate the kwargs lazily.
+            # We need to convert this to a dictionary
+            # before passing to `blockwise`
+            other_kwargs = other_kwargs[0](other_kwargs[1][0](*other_kwargs[1][1:]))
+        dsk = blockwise(
+            func,
+            name,
+            "i",
+            *pairs,
+            numblocks=numblocks,
+            concatenate=True,
+            dependencies=dependencies,
+            **other_kwargs,
+        )
 
     # If all bags are the same type, use that type, otherwise fallback to Bag
     return_type = set(map(type, bags))
@@ -2314,7 +2363,7 @@ def make_group(k, stage):
     return h
 
 
-def groupby_tasks(b, grouper, hash=hash, max_branch=32):
+def groupby_tasks(b, grouper, hash=lambda x: int(tokenize(x), 16), max_branch=32):
     max_branch = max_branch or 32
     n = b.npartitions
 
@@ -2493,7 +2542,9 @@ def random_sample(x, state_data, prob):
             yield i
 
 
-def random_state_data_python(n, random_state=None):
+def random_state_data_python(
+    n: int, random_state: int | Random | None = None
+) -> list[tuple[int, tuple[int, ...], None]]:
     """Return a list of tuples that can be passed to
     ``random.Random.setstate``.
 
@@ -2503,19 +2554,37 @@ def random_state_data_python(n, random_state=None):
         Number of tuples to return.
     random_state : int or ``random.Random``, optional
         If an int, is used to seed a new ``random.Random``.
-    """
-    if not isinstance(random_state, Random):
-        random_state = Random(random_state)
 
+    See Also
+    --------
+    dask.utils.random_state_data
+    """
     maxuint32 = 1 << 32
-    return [
-        (
-            3,
-            tuple(random_state.randint(0, maxuint32) for i in range(624)) + (624,),
-            None,
-        )
-        for i in range(n)
-    ]
+
+    try:
+        import numpy as np
+
+        if isinstance(random_state, Random):
+            random_state = random_state.randint(0, maxuint32)
+        np_rng = np.random.default_rng(random_state)
+
+        random_data = np_rng.bytes(624 * n * 4)  # `n * 624` 32-bit integers
+        arr = np.frombuffer(random_data, dtype=np.uint32).reshape((n, -1))
+        return [(3, tuple(row) + (624,), None) for row in arr.tolist()]
+
+    except ImportError:
+        # Pure python (much slower)
+        if not isinstance(random_state, Random):
+            random_state = Random(random_state)
+
+        return [
+            (
+                3,
+                tuple(random_state.randint(0, maxuint32) for _ in range(624)) + (624,),
+                None,
+            )
+            for _ in range(n)
+        ]
 
 
 def split(seq, n):
@@ -2535,13 +2604,16 @@ def split(seq, n):
 
 def to_dataframe(seq, columns, dtypes):
     import pandas as pd
+    from packaging.version import Version
 
     seq = reify(seq)
     # pd.DataFrame expects lists, only copy if necessary
     if not isinstance(seq, list):
         seq = list(seq)
+
+    kwargs = {} if Version(pd.__version__).major >= 3 else {"copy": False}
     res = pd.DataFrame(seq, columns=list(columns))
-    return res.astype(dtypes, copy=False)
+    return res.astype(dtypes, **kwargs)
 
 
 def repartition_npartitions(bag, npartitions):
@@ -2570,11 +2642,10 @@ def repartition_npartitions(bag, npartitions):
 
 def total_mem_usage(partition):
     from copy import deepcopy
-    from itertools import chain
 
     # if repartition is called multiple times prior to calling compute(), the partitions
-    # will be itertools.chain objects. Copy the object to avoid consuming the iterable.
-    if isinstance(partition, chain):
+    # will be an Iterable. Copy the object to avoid consuming the iterable.
+    if isinstance(partition, Iterable):
         partition = reify(deepcopy(partition))
     return sizeof(partition)
 

@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import datetime
 import functools
 import operator
 import pickle
+from array import array
 
 import pytest
 from tlz import curry
@@ -17,10 +20,15 @@ from dask.utils import (
     asciitable,
     cached_cumsum,
     derived_from,
+    ensure_bytes,
     ensure_dict,
+    ensure_set,
+    ensure_unicode,
     extra_titles,
     format_bytes,
+    format_time,
     funcname,
+    get_meta_library,
     getargspec,
     has_keyword,
     is_arraylike,
@@ -37,9 +45,55 @@ from dask.utils import (
     stringify,
     stringify_collection_keys,
     takes_multiple_arguments,
+    tmpfile,
     typename,
 )
 from dask.utils_test import inc
+
+
+def test_ensure_bytes():
+    data = [b"1", "1", memoryview(b"1"), bytearray(b"1"), array("B", b"1")]
+    for d in data:
+        result = ensure_bytes(d)
+        assert isinstance(result, bytes)
+        assert result == b"1"
+
+
+def test_ensure_bytes_ndarray():
+    np = pytest.importorskip("numpy")
+    result = ensure_bytes(np.arange(12))
+    assert isinstance(result, bytes)
+
+
+def test_ensure_bytes_pyarrow_buffer():
+    pa = pytest.importorskip("pyarrow")
+    buf = pa.py_buffer(b"123")
+    result = ensure_bytes(buf)
+    assert isinstance(result, bytes)
+
+
+def test_ensure_unicode():
+    data = [b"1", "1", memoryview(b"1"), bytearray(b"1"), array("B", b"1")]
+    for d in data:
+        result = ensure_unicode(d)
+        assert isinstance(result, str)
+        assert result == "1"
+
+
+def test_ensure_unicode_ndarray():
+    np = pytest.importorskip("numpy")
+    a = np.frombuffer(b"123", dtype="u1")
+    result = ensure_unicode(a)
+    assert isinstance(result, str)
+    assert result == "123"
+
+
+def test_ensure_unicode_pyarrow_buffer():
+    pa = pytest.importorskip("pyarrow")
+    buf = pa.py_buffer(b"123")
+    result = ensure_unicode(buf)
+    assert isinstance(result, str)
+    assert result == "123"
 
 
 def test_getargspec():
@@ -466,6 +520,22 @@ def test_ensure_dict():
         assert di == d
 
 
+def test_ensure_set():
+    s = {1}
+    assert ensure_set(s) is s
+
+    class myset(set):
+        pass
+
+    s2 = ensure_set(s, copy=True)
+    s3 = ensure_set(myset(s))
+
+    for si in (s2, s3):
+        assert type(si) is set
+        assert si is not s
+        assert si == s
+
+
 def test_itemgetter():
     data = [1, 2, 3]
     g = itemgetter(1)
@@ -533,6 +603,34 @@ def test_derived_from():
     assert "  extra docstring\n\n" in Zap.f.__doc__
 
 
+@pytest.mark.parametrize(
+    "decorator",
+    [property, functools.cached_property],
+    ids=["@property", "@cached_property"],
+)
+def test_derived_from_prop_cached_prop(decorator):
+    class Base:
+        @decorator
+        def prop(self):
+            """A property
+
+            Long details"""
+            return 1
+
+    class Derived:
+        @decorator
+        @derived_from(Base)
+        def prop(self):
+            "Some extra doc"
+            return 3
+
+    docstring = Derived.prop.__doc__
+    assert docstring is not None
+    assert docstring.strip().startswith("A property")
+    assert any("inconsistencies" in line for line in docstring.split("\n"))
+    assert any("Some extra doc" in line for line in docstring.split("\n"))
+
+
 def test_derived_from_func():
     import builtins
 
@@ -547,7 +645,10 @@ def test_derived_from_func():
 
 
 def test_derived_from_dask_dataframe():
+    dd = pytest.importorskip("pandas")
     dd = pytest.importorskip("dask.dataframe")
+    if dd._dask_expr_enabled():
+        pytest.xfail("we don't have docs yet")
 
     assert "inconsistencies" in dd.DataFrame.dropna.__doc__
 
@@ -588,6 +689,8 @@ def test_parse_timedelta():
         ("3500 us", 0.0035),
         ("1 ns", 1e-9),
         ("2m", 120),
+        ("5 days", 5 * 24 * 60 * 60),
+        ("2 w", 2 * 7 * 24 * 60 * 60),
         ("2 minutes", 120),
         (None, None),
         (3, 3),
@@ -601,6 +704,16 @@ def test_parse_timedelta():
     assert parse_timedelta("1", default="seconds") == 1
     assert parse_timedelta("1", default="ms") == 0.001
     assert parse_timedelta(1, default="ms") == 0.001
+
+    assert parse_timedelta("1ms", default=False) == 0.001
+    with pytest.raises(ValueError):
+        parse_timedelta(1, default=False)
+    with pytest.raises(ValueError):
+        parse_timedelta("1", default=False)
+    with pytest.raises(TypeError):
+        parse_timedelta("1", default=None)
+    with pytest.raises(KeyError, match="Invalid time unit: foo. Valid units are"):
+        parse_timedelta("1 foo")
 
 
 def test_is_arraylike():
@@ -702,6 +815,18 @@ def test_format_bytes(n, expect):
     assert format_bytes(int(n)) == expect
 
 
+def test_format_time():
+    assert format_time(1.4) == "1.40 s"
+    assert format_time(10.4) == "10.40 s"
+    assert format_time(100.4) == "100.40 s"
+    assert format_time(1000.4) == "16m 40s"
+    assert format_time(10000.4) == "2hr 46m"
+    assert format_time(1234.567) == "20m 34s"
+    assert format_time(12345.67) == "3hr 25m"
+    assert format_time(123456.78) == "34hr 17m"
+    assert format_time(1234567.8) == "14d 6hr"
+
+
 def test_deprecated():
     @_deprecated()
     def foo():
@@ -791,3 +916,55 @@ def test_cached_cumsum_non_tuple():
     assert cached_cumsum(a) == (1, 3, 6)
     a[1] = 4
     assert cached_cumsum(a) == (1, 5, 8)
+
+
+def test_tmpfile_naming():
+    with tmpfile() as fn:
+        # Do not end file or directory name with a period.
+        #  This causes issues on Windows.
+        assert fn[-1] != "."
+
+    with tmpfile(extension="jpg") as fn:
+        assert fn[-4:] == ".jpg"
+
+    with tmpfile(extension=".jpg") as fn:
+        assert fn[-4:] == ".jpg"
+        assert fn[-5] != "."
+
+
+def test_get_meta_library():
+    np = pytest.importorskip("numpy")
+    pd = pytest.importorskip("pandas")
+    da = pytest.importorskip("dask.array")
+    dd = pytest.importorskip("dask.dataframe")
+
+    assert get_meta_library(pd.DataFrame()) == pd
+    assert get_meta_library(np.array([])) == np
+
+    assert get_meta_library(pd.DataFrame()) == get_meta_library(pd.DataFrame)
+    assert get_meta_library(np.ndarray([])) == get_meta_library(np.ndarray)
+
+    assert get_meta_library(pd.DataFrame()) == get_meta_library(
+        dd.from_dict({}, npartitions=1)
+    )
+    assert get_meta_library(np.ndarray([])) == get_meta_library(da.from_array([]))
+
+
+def test_get_meta_library_gpu():
+    cp = pytest.importorskip("cupy")
+    cudf = pytest.importorskip("cudf")
+    da = pytest.importorskip("dask.array")
+    dd = pytest.importorskip("dask.dataframe")
+
+    assert get_meta_library(cudf.DataFrame()) == cudf
+    assert get_meta_library(cp.array([])) == cp
+
+    assert get_meta_library(cudf.DataFrame()) == get_meta_library(cudf.DataFrame)
+    assert get_meta_library(cp.ndarray([])) == get_meta_library(cp.ndarray)
+
+    assert get_meta_library(cudf.DataFrame()) == get_meta_library(
+        dd.from_dict({}, npartitions=1).to_backend("cudf")
+    )
+    assert get_meta_library(cp.ndarray([])) == get_meta_library(
+        da.from_array([]).to_backend("cupy")
+    )

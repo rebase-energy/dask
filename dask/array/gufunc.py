@@ -1,12 +1,14 @@
+from __future__ import annotations
+
 import re
 
 import numpy as np
 from tlz import concat, merge, unique
 
-from ..core import flatten
-from ..highlevelgraph import HighLevelGraph
-from .core import Array, apply_infer_dtype, asarray, blockwise, getitem
-from .utils import meta_from_array
+from dask.array.core import Array, apply_infer_dtype, asarray, blockwise, getitem
+from dask.array.utils import meta_from_array
+from dask.core import flatten
+from dask.highlevelgraph import HighLevelGraph
 
 # Modified version of `numpy.lib.function_base._parse_gufunc_signature`
 # Modifications:
@@ -111,7 +113,7 @@ def _validate_normalize_axes(axes, axis, keepdims, input_coredimss, output_cored
                         "To use `axis`, all core dimensions have to be equal"
                     )
 
-    # Expand dafaults or axis
+    # Expand defaults or axis
     if axes is None:
         if axis is not None:
             axes = [(axis,) if cd else tuple() for cd in core_dims]
@@ -382,7 +384,7 @@ def apply_gufunc(
 
     ## Axes: transpose input arguments
     transposed_args = []
-    for arg, iax, input_coredims in zip(args, input_axes, input_coredimss):
+    for arg, iax in zip(args, input_axes):
         shape = arg.shape
         iax = tuple(a if a < 0 else a - len(shape) for a in iax)
         tidc = tuple(i for i in range(-len(shape) + 0, 0) if i not in iax) + iax

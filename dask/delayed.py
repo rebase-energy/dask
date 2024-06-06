@@ -1,26 +1,40 @@
+from __future__ import annotations
+
 import operator
 import types
 import uuid
 import warnings
-from collections.abc import Iterator
-from dataclasses import fields, is_dataclass
+from collections.abc import Sequence
+from dataclasses import fields, is_dataclass, replace
+from functools import partial
 
 from tlz import concat, curry, merge, unique
 
-from . import config, threaded
-from .base import (
+from dask import config
+from dask.base import (
     DaskMethodsMixin,
     dont_optimize,
     is_dask_collection,
+    named_schedulers,
     replace_name_in_key,
 )
-from .base import tokenize as _tokenize
-from .context import globalmethod
-from .core import flatten, quote
-from .highlevelgraph import HighLevelGraph
-from .utils import OperatorMethodMixin, apply, funcname, methodcaller
+from dask.base import tokenize as _tokenize
+from dask.context import globalmethod
+from dask.core import flatten, quote
+from dask.highlevelgraph import HighLevelGraph
+from dask.typing import Graph, NestedKeys
+from dask.utils import (
+    OperatorMethodMixin,
+    apply,
+    funcname,
+    is_namedtuple_instance,
+    methodcaller,
+)
 
 __all__ = ["Delayed", "delayed"]
+
+
+DEFAULT_GET = named_schedulers.get("threads", named_schedulers["sync"])
 
 
 def unzip(ls, nout):
@@ -84,8 +98,12 @@ def unpack_collections(expr):
         finalized = finalize(expr)
         return finalized._key, (finalized,)
 
-    if isinstance(expr, Iterator):
+    if type(expr) is type(iter(list())):
+        expr = list(expr)
+    elif type(expr) is type(iter(tuple())):
         expr = tuple(expr)
+    elif type(expr) is type(iter(set())):
+        expr = set(expr)
 
     typ = type(expr)
 
@@ -104,7 +122,7 @@ def unpack_collections(expr):
 
     if typ is slice:
         args, collections = unpack_collections([expr.start, expr.stop, expr.step])
-        return (slice,) + tuple(args), collections
+        return (slice, *args), collections
 
     if is_dataclass(expr):
         args, collections = unpack_collections(
@@ -114,8 +132,30 @@ def unpack_collections(expr):
                 if hasattr(expr, f.name)  # if init=False, field might not exist
             ]
         )
-
+        if not collections:
+            return expr, ()
+        try:
+            _fields = {
+                f.name: getattr(expr, f.name)
+                for f in fields(expr)
+                if hasattr(expr, f.name)
+            }
+            replace(expr, **_fields)
+        except TypeError as e:
+            raise TypeError(
+                f"Failed to unpack {typ} instance. "
+                "Note that using a custom __init__ is not supported."
+            ) from e
+        except ValueError as e:
+            raise ValueError(
+                f"Failed to unpack {typ} instance. "
+                "Note that using fields with `init=False` are not supported."
+            ) from e
         return (apply, typ, (), (dict, args)), collections
+
+    if is_namedtuple_instance(expr):
+        args, collections = unpack_collections([v for v in expr])
+        return (typ, *args), collections
 
     return expr, ()
 
@@ -173,8 +213,12 @@ def to_task_dask(expr):
         dsk.update(opt(expr.__dask_graph__(), keys))
         return name, dsk
 
-    if isinstance(expr, Iterator):
+    if type(expr) is type(iter(list())):
         expr = list(expr)
+    elif type(expr) is type(iter(tuple())):
+        expr = tuple(expr)
+    elif type(expr) is type(iter(set())):
+        expr = set(expr)
     typ = type(expr)
 
     if typ in (list, tuple, set):
@@ -198,6 +242,10 @@ def to_task_dask(expr):
         )
 
         return (apply, typ, (), (dict, args)), dsk
+
+    if is_namedtuple_instance(expr):
+        args, dsk = to_task_dask([v for v in expr])
+        return (typ, *args), dsk
 
     if typ is slice:
         args, dsk = to_task_dask([expr.start, expr.stop, expr.step])
@@ -238,7 +286,7 @@ def delayed(obj, name=None, pure=None, nout=None, traverse=True):
     ----------
     obj : object
         The function or object to wrap
-    name : string or hashable, optional
+    name : Dask key, optional
         The key to use in the underlying graph for the wrapped object. Defaults
         to hashing content. Note that this only affects the name of the object
         wrapped by this call to delayed, and *not* the output of delayed
@@ -394,7 +442,7 @@ def delayed(obj, name=None, pure=None, nout=None, traverse=True):
 
     "Magic" methods (e.g. operators and attribute access) are assumed to be
     pure, meaning that subsequent calls must return the same results. This
-    behavior is not overrideable through the ``delayed`` call, but can be
+    behavior is not overridable through the ``delayed`` call, but can be
     modified using other ways as described below.
 
     To invoke an impure attribute or operator, you'd need to use it in a
@@ -460,13 +508,13 @@ def delayed(obj, name=None, pure=None, nout=None, traverse=True):
         return Delayed(name, graph, nout)
 
 
+def _swap(method, self, other):
+    return method(other, self)
+
+
 def right(method):
     """Wrapper to create 'right' version of operator given left version"""
-
-    def _inner(self, other):
-        return method(other, self)
-
-    return _inner
+    return partial(_swap, method)
 
 
 def optimize(dsk, keys, **kwargs):
@@ -506,19 +554,19 @@ class Delayed(DaskMethodsMixin, OperatorMethodMixin):
     def dask(self):
         return self._dask
 
-    def __dask_graph__(self):
+    def __dask_graph__(self) -> Graph:
         return self.dask
 
-    def __dask_keys__(self):
+    def __dask_keys__(self) -> NestedKeys:
         return [self.key]
 
-    def __dask_layers__(self):
+    def __dask_layers__(self) -> Sequence[str]:
         return (self._layer,)
 
     def __dask_tokenize__(self):
         return self.key
 
-    __dask_scheduler__ = staticmethod(threaded.get)
+    __dask_scheduler__ = staticmethod(DEFAULT_GET)
     __dask_optimize__ = globalmethod(optimize, key="delayed_optimize")
 
     def __dask_postcompute__(self):
@@ -659,6 +707,18 @@ class DelayedLeaf(Delayed):
         return call_function(
             self._obj, self._key, args, kwargs, pure=self._pure, nout=self._nout
         )
+
+    @property
+    def __name__(self):
+        return self._obj.__name__
+
+    @property
+    def __doc__(self):
+        return self._obj.__doc__
+
+    @property
+    def __wrapped__(self):
+        return self._obj
 
 
 class DelayedAttr(Delayed):

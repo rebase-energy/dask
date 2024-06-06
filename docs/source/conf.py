@@ -14,9 +14,15 @@ from __future__ import annotations
 
 import os
 
+# Build docs with option disabled until we move dask-expr over, otherwise
+# we run into a lot of circular issues that sphinx can't resolve properly
+os.environ["DASK_DATAFRAME__QUERY_PLANNING"] = "false"
+
 # Add any Sphinx extension module names here, as strings. They can be extensions
 # coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
 import sys
+
+import sphinx_autosummary_accessors
 
 # -- General configuration -----------------------------------------------------
 
@@ -29,25 +35,29 @@ import sys
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 sys.path.insert(0, os.path.abspath("../../"))
 
-source_dir = os.path.dirname(__file__)
-sys.path.insert(0, os.path.join(source_dir, "ext"))
-
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.doctest",
     "sphinx.ext.mathjax",
     "sphinx.ext.intersphinx",
     "sphinx.ext.autosummary",
+    "sphinx_autosummary_accessors",
     "sphinx.ext.extlinks",
     "sphinx.ext.viewcode",
     "numpydoc",
     "sphinx_click.ext",
-    "dask_config_sphinx_ext",
+    "dask_sphinx_theme.ext.dask_config_sphinx_ext",
     "sphinx_tabs.tabs",
     "sphinx_remove_toctrees",
     "IPython.sphinxext.ipython_console_highlighting",
     "IPython.sphinxext.ipython_directive",
+    "jupyter_sphinx",
+    "sphinx_copybutton",
+    "sphinx_design",
 ]
+
+copybutton_prompt_text = r">>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: | {5,8}: "
+copybutton_prompt_is_regexp = True
 
 numpydoc_show_class_members = False
 
@@ -58,7 +68,7 @@ sphinx_tabs_disable_tab_closing = True
 remove_from_toctrees = ["generated/*"]
 
 # Add any paths that contain templates here, relative to this directory.
-templates_path = ["_templates"]
+templates_path = ["_templates", sphinx_autosummary_accessors.templates_path]
 
 # The suffix of source filenames.
 source_suffix = ".rst"
@@ -102,7 +112,9 @@ exclude_patterns: list[str] = []
 # show_authors = False
 
 # The name of the Pygments (syntax highlighting) style to use.
-pygments_style = "default"
+# Commenting this out for now, if we register dask pygments,
+# then eventually this line can be:
+# pygments_style = "dask"
 
 # A list of ignored prefixes for module index sorting.
 # modindex_common_prefix = []
@@ -307,6 +319,7 @@ epub_copyright = "2014-2018, Anaconda, Inc. and contributors"
 extlinks = {
     "issue": ("https://github.com/dask/dask/issues/%s", "GH#"),
     "pr": ("https://github.com/dask/dask/pull/%s", "GH#"),
+    "pr-distributed": ("https://github.com/dask/distributed/pull/%s", "GH#"),
 }
 
 #  --Options for sphinx extensions -----------------------------------------------
@@ -325,12 +338,19 @@ intersphinx_mapping = {
         "https://asyncssh.readthedocs.io/en/latest/",
         "https://asyncssh.readthedocs.io/en/latest/objects.inv",
     ),
+    "distributed": ("https://distributed.dask.org/en/latest", None),
     "pyarrow": ("https://arrow.apache.org/docs/", None),
     "zarr": (
         "https://zarr.readthedocs.io/en/latest/",
         "https://zarr.readthedocs.io/en/latest/objects.inv",
     ),
     "skimage": ("https://scikit-image.org/docs/dev/", None),
+    "fsspec": (
+        "https://filesystem-spec.readthedocs.io/en/latest/",
+        "https://filesystem-spec.readthedocs.io/en/latest/objects.inv",
+    ),
+    "click": ("https://click.palletsprojects.com/", None),
+    "scipy": ("https://docs.scipy.org/doc/scipy", None),
 }
 
 # Redirects
@@ -388,9 +408,12 @@ redirect_files = [
     ("setup/ssh.html", "deploying-ssh.html"),
     ("how-to/deploy-dask/ssh.html", "deploying-ssh.html"),
     ("setup/adaptive.html", "how-to/adaptive.html"),
+    ("how-to/adaptive.html", "adaptive.html"),
     ("setup/custom-startup.html", "how-to/customize-initialization.html"),
     ("setup/environment.html", "how-to/manage-environments.html"),
+    ("how-to/manage-environments.html", "software-environments.html"),
     ("setup/prometheus.html", "how-to/setup-prometheus.html"),
+    ("how-to/setup-prometheus.html", "prometheus.html"),
 ]
 
 

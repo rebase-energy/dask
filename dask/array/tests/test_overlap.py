@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import pytest
 
 pytest.importorskip("numpy")
@@ -6,6 +8,7 @@ import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 import dask.array as da
+from dask.array.lib.stride_tricks import sliding_window_view
 from dask.array.overlap import (
     boundaries,
     constant,
@@ -18,8 +21,6 @@ from dask.array.overlap import (
     trim_internal,
 )
 from dask.array.utils import assert_eq, same_keys
-
-from ..lib.stride_tricks import sliding_window_view
 
 
 def test_overlap_internal():
@@ -119,7 +120,7 @@ def test_overlap_internal_asymmetric_small():
 
 def test_trim_internal():
     d = da.ones((40, 60), chunks=(10, 10))
-    e = trim_internal(d, axes={0: 1, 1: 2})
+    e = trim_internal(d, axes={0: 1, 1: 2}, boundary="reflect")
 
     assert e.chunks == ((8, 8, 8, 8), (6, 6, 6, 6, 6, 6))
 
@@ -265,6 +266,20 @@ def test_overlap():
     assert g.chunks == ((8, 8), (5, 5))
 
 
+def test_overlap_allow_rechunk_kwarg():
+    # The smallest array chunk is too small to fit overlap depth
+    arr = da.arange(6, chunks=5)
+    da.overlap.overlap(arr, 2, "reflect", allow_rechunk=True)
+    arr.map_overlap(lambda x: x, 2, "reflect", allow_rechunk=True)
+    with pytest.raises(ValueError):
+        da.overlap.overlap(arr, 2, "reflect", allow_rechunk=False)
+    with pytest.raises(ValueError):
+        arr.map_overlap(lambda x: x, 2, "reflect", allow_rechunk=False)
+    # No rechunking required
+    arr = da.arange(6, chunks=4)
+    da.overlap.overlap(arr, 2, "reflect", allow_rechunk=False)
+
+
 def test_asymmetric_overlap_boundary_exception():
     x = da.arange(10, chunks=5)
     with pytest.raises(NotImplementedError):
@@ -332,15 +347,8 @@ def test_map_overlap_escapes_to_map_blocks_when_depth_is_zero():
 )
 def test_map_overlap_no_depth(boundary):
     x = da.arange(10, chunks=5)
-    if boundary is None:
-        # Can be removed after boundary default argument is changed to "none"
-        # See https://github.com/dask/dask/issues/8391
-        with pytest.raises(FutureWarning):
-            y = x.map_overlap(lambda i: i, depth=0, boundary=boundary, dtype=x.dtype)
-            assert_eq(y, x)
-    else:
-        y = x.map_overlap(lambda i: i, depth=0, boundary=boundary, dtype=x.dtype)
-        assert_eq(y, x)
+    y = x.map_overlap(lambda i: i, depth=0, boundary=boundary, dtype=x.dtype)
+    assert_eq(y, x)
 
 
 def test_map_overlap_multiarray():
@@ -496,7 +504,7 @@ def test_map_overlap_multiarray_variadic():
     ),
 )
 def test_map_overlap_trim_using_drop_axis_and_different_depths(drop_axis):
-    x = da.random.standard_normal((5, 10, 8), chunks=(2, 5, 4))
+    x = da.random.default_rng().standard_normal((5, 10, 8), chunks=(2, 5, 4))
 
     def _mean(x):
         return x.mean(axis=drop_axis)
@@ -560,55 +568,38 @@ def test_nearest_overlap():
 
     darr = da.from_array(a, chunks=(6, 6))
     garr = overlap(darr, depth={0: 5, 1: 5}, boundary={0: "nearest", 1: "nearest"})
-    tarr = trim_internal(garr, {0: 5, 1: 5})
+    tarr = trim_internal(garr, {0: 5, 1: 5}, boundary="nearest")
     assert_array_almost_equal(tarr, a)
 
 
-def test_0_depth():
+@pytest.mark.parametrize(
+    "depth",
+    [
+        {0: 0, 1: 0},  # depth all zeros
+        {0: 4, 1: 0},  # depth with some zeros
+        {0: 5, 1: 5},  # depth equal to boundary length
+        {0: 8, 1: 7},  # depth greater than boundary length
+    ],
+)
+def test_different_depths_and_boundary_combinations(depth):
     expected = np.arange(100).reshape(10, 10)
     darr = da.from_array(expected, chunks=(5, 2))
 
-    depth = {0: 0, 1: 0}
-
     reflected = overlap(darr, depth=depth, boundary="reflect")
     nearest = overlap(darr, depth=depth, boundary="nearest")
     periodic = overlap(darr, depth=depth, boundary="periodic")
     constant = overlap(darr, depth=depth, boundary=42)
 
-    result = trim_internal(reflected, depth)
+    result = trim_internal(reflected, depth, boundary="reflect")
     assert_array_equal(result, expected)
 
-    result = trim_internal(nearest, depth)
+    result = trim_internal(nearest, depth, boundary="nearest")
     assert_array_equal(result, expected)
 
-    result = trim_internal(periodic, depth)
+    result = trim_internal(periodic, depth, boundary="periodic")
     assert_array_equal(result, expected)
 
-    result = trim_internal(constant, depth)
-    assert_array_equal(result, expected)
-
-
-def test_some_0_depth():
-    expected = np.arange(100).reshape(10, 10)
-    darr = da.from_array(expected, chunks=(5, 5))
-
-    depth = {0: 4, 1: 0}
-
-    reflected = overlap(darr, depth=depth, boundary="reflect")
-    nearest = overlap(darr, depth=depth, boundary="nearest")
-    periodic = overlap(darr, depth=depth, boundary="periodic")
-    constant = overlap(darr, depth=depth, boundary=42)
-
-    result = trim_internal(reflected, depth)
-    assert_array_equal(result, expected)
-
-    result = trim_internal(nearest, depth)
-    assert_array_equal(result, expected)
-
-    result = trim_internal(periodic, depth)
-    assert_array_equal(result, expected)
-
-    result = trim_internal(constant, depth)
+    result = trim_internal(constant, depth, boundary=42)
     assert_array_equal(result, expected)
 
 
@@ -624,54 +615,6 @@ def test_constant_boundaries():
     darr = da.from_array(a, chunks=((1,), (2, 2, 2, 3)))
     b = boundaries(darr, {0: 0, 1: 0}, {0: 0, 1: 0})
     assert b.chunks == darr.chunks
-
-
-def test_depth_equals_boundary_length():
-    expected = np.arange(100).reshape(10, 10)
-    darr = da.from_array(expected, chunks=(5, 5))
-
-    depth = {0: 5, 1: 5}
-
-    reflected = overlap(darr, depth=depth, boundary="reflect")
-    nearest = overlap(darr, depth=depth, boundary="nearest")
-    periodic = overlap(darr, depth=depth, boundary="periodic")
-    constant = overlap(darr, depth=depth, boundary=42)
-
-    result = trim_internal(reflected, depth)
-    assert_array_equal(result, expected)
-
-    result = trim_internal(nearest, depth)
-    assert_array_equal(result, expected)
-
-    result = trim_internal(periodic, depth)
-    assert_array_equal(result, expected)
-
-    result = trim_internal(constant, depth)
-    assert_array_equal(result, expected)
-
-
-def test_depth_greater_than_boundary_length():
-    expected = np.arange(100).reshape(10, 10)
-    darr = da.from_array(expected, chunks=(5, 5))
-
-    depth = {0: 8, 1: 7}
-
-    reflected = overlap(darr, depth=depth, boundary="reflect")
-    nearest = overlap(darr, depth=depth, boundary="nearest")
-    periodic = overlap(darr, depth=depth, boundary="periodic")
-    constant = overlap(darr, depth=depth, boundary=42)
-
-    result = trim_internal(reflected, depth)
-    assert_array_equal(result, expected)
-
-    result = trim_internal(nearest, depth)
-    assert_array_equal(result, expected)
-
-    result = trim_internal(periodic, depth)
-    assert_array_equal(result, expected)
-
-    result = trim_internal(constant, depth)
-    assert_array_equal(result, expected)
 
 
 @pytest.mark.parametrize(
@@ -726,8 +669,8 @@ def test_overlap_small():
 
 
 def test_no_shared_keys_with_different_depths():
-    da.random.seed(0)
-    a = da.random.random((9, 9), chunks=(3, 3))
+    rng = da.random.default_rng(0)
+    a = rng.random((9, 9), chunks=(3, 3))
 
     def check(x):
         assert x.shape == (3, 3)
@@ -780,7 +723,7 @@ def test_overlap_few_dimensions():
 
 
 @pytest.mark.parametrize("boundary", ["reflect", "periodic", "nearest", "none"])
-def test_trim_boundry(boundary):
+def test_trim_boundary(boundary):
     x = da.from_array(np.arange(24).reshape(4, 6), chunks=(2, 3))
     x_overlaped = da.overlap.overlap(x, 2, boundary={0: "reflect", 1: boundary})
     x_trimmed = da.overlap.trim_overlap(
@@ -808,7 +751,7 @@ def test_map_overlap_rechunks_array_if_needed():
 
 def test_map_overlap_rechunks_array_along_multiple_dims_if_needed():
     # https://github.com/dask/dask/issues/6688
-    rand = da.random.random((860, 1024, 1024), chunks=(1, 1024, 1024))
+    rand = da.random.default_rng().random((860, 1024, 1024), chunks=(1, 1024, 1024))
     filtered = rand.map_overlap(
         lambda arr: arr,
         depth=(2, 2, 2),
@@ -860,11 +803,11 @@ def test_ensure_minimum_chunksize_raises_error():
     ],
 )
 def test_sliding_window_view(shape, chunks, window_shape, axis):
-    from ..numpy_compat import sliding_window_view as np_sliding_window_view
-
     arr = da.from_array(np.arange(np.prod(shape)).reshape(shape), chunks=chunks)
     actual = sliding_window_view(arr, window_shape, axis)
-    expected = np_sliding_window_view(arr.compute(), window_shape, axis)
+    expected = np.lib.stride_tricks.sliding_window_view(
+        arr.compute(), window_shape, axis
+    )
     assert_eq(expected, actual)
 
 

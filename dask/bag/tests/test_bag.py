@@ -1,11 +1,15 @@
+from __future__ import annotations
+
 import gc
 import math
 import os
 import random
+import warnings
 import weakref
 from bz2 import BZ2File
 from collections.abc import Iterator
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from gzip import GzipFile
 from itertools import repeat
 
@@ -29,11 +33,13 @@ from dask.bag.core import (
     total_mem_usage,
 )
 from dask.bag.utils import assert_eq
+from dask.blockwise import Blockwise
 from dask.delayed import Delayed
+from dask.typing import Graph
 from dask.utils import filetexts, tmpdir, tmpfile
-from dask.utils_test import add, hlg_layer_topological, inc
+from dask.utils_test import add, hlg_layer, hlg_layer_topological, inc
 
-dsk = {("x", 0): (range, 5), ("x", 1): (range, 5), ("x", 2): (range, 5)}
+dsk: Graph = {("x", 0): (range, 5), ("x", 1): (range, 5), ("x", 2): (range, 5)}
 
 L = list(range(5)) * 3
 
@@ -60,7 +66,7 @@ def test_keys():
 def test_bag_groupby_pure_hash():
     # https://github.com/dask/dask/issues/6640
     result = b.groupby(iseven).compute()
-    assert result == [(False, [1, 3] * 3), (True, [0, 2, 4] * 3)]
+    assert result == [(True, [0, 2, 4] * 3), (False, [1, 3] * 3)]
 
 
 def test_bag_groupby_normal_hash():
@@ -69,6 +75,41 @@ def test_bag_groupby_normal_hash():
     assert len(result) == 2
     assert ("odd", [1, 3] * 3) in result
     assert ("even", [0, 2, 4] * 3) in result
+
+
+@pytest.mark.parametrize("shuffle", ["disk", "tasks"])
+@pytest.mark.parametrize("scheduler", ["synchronous", "processes"])
+def test_bag_groupby_none(shuffle, scheduler):
+    with dask.config.set(scheduler=scheduler):
+        seq = [(None, i) for i in range(50)]
+        b = db.from_sequence(seq).groupby(lambda x: x[0], shuffle=shuffle)
+        result = b.compute()
+        assert len(result) == 1
+
+
+@dataclass(frozen=True)
+class Key:
+    foo: int
+    bar: int | None = None
+
+
+@pytest.mark.parametrize(
+    "key",
+    # if a value for `bar` is not explicitly passed, Key.bar will default to `None`,
+    # thereby introducing the risk of inter-process inconsistency for the value returned by
+    # built-in `hash` (due to lack of deterministic hashing for `None` prior to python 3.12).
+    # without https://github.com/dask/dask/pull/10734, this results in failures for this test.
+    [Key(foo=1), Key(foo=1, bar=2)],
+    ids=["none_field", "no_none_fields"],
+)
+@pytest.mark.parametrize("shuffle", ["disk", "tasks"])
+@pytest.mark.parametrize("scheduler", ["synchronous", "processes"])
+def test_bag_groupby_dataclass(key, shuffle, scheduler):
+    seq = [(key, i) for i in range(50)]
+    b = db.from_sequence(seq).groupby(lambda x: x[0], shuffle=shuffle)
+    with dask.config.set(scheduler=scheduler):
+        result = b.compute()
+    assert len(result) == 1
 
 
 def test_bag_map():
@@ -471,6 +512,16 @@ def test_map_partitions_args_kwargs():
     assert_eq(dx.map_partitions(maximum, dy_mean), sol)
 
 
+def test_map_partitions_blockwise():
+    # Check that the `token` argument works,
+    # and that `map_partitions`` is using `Blockwise`.
+    layer = hlg_layer(
+        b.map_partitions(lambda x: x, token="test-string").dask, "test-string"
+    )
+    assert layer
+    assert isinstance(layer, Blockwise)
+
+
 def test_random_sample_size():
     """
     Number of randomly sampled elements are in the expected range.
@@ -605,13 +656,10 @@ def test_take_npartitions_warn():
         with pytest.warns(UserWarning):
             b.take(7)
 
-        with pytest.warns(None) as rec:
+        with warnings.catch_warnings(record=True) as record:
             b.take(7, npartitions=2)
-        assert len(rec) == 0
-
-        with pytest.warns(None) as rec:
             b.take(7, warn=False)
-        assert len(rec) == 0
+        assert not record
 
 
 def test_map_is_lazy():
@@ -727,6 +775,7 @@ def test_from_long_sequence():
 
 
 def test_from_empty_sequence():
+    pytest.importorskip("pandas")
     pytest.importorskip("dask.dataframe")
     b = db.from_sequence([])
     assert b.npartitions == 1
@@ -751,11 +800,11 @@ def test_product():
 def test_partition_collect():
     with partd.Pickle() as p:
         partition(identity, range(6), 3, p)
-        assert set(p.get(0)) == {0, 3}
-        assert set(p.get(1)) == {1, 4}
-        assert set(p.get(2)) == {2, 5}
+        assert set(p.get(0)) == {3, 5}
+        assert set(p.get(1)) == {1}
+        assert set(p.get(2)) == {0, 2, 4}
 
-        assert sorted(collect(identity, 0, p, "")) == [(0, [0]), (3, [3])]
+        assert sorted(collect(identity, 2, p, "")) == [(0, [0]), (2, [2]), (4, [4])]
 
 
 def test_groupby():
@@ -830,8 +879,8 @@ def test_args():
 
 
 def test_to_dataframe():
-    dd = pytest.importorskip("dask.dataframe")
     pd = pytest.importorskip("pandas")
+    dd = pytest.importorskip("dask.dataframe")
 
     def check_parts(df, sol):
         assert all(
@@ -962,8 +1011,7 @@ def test_to_textfiles_name_function_warn():
     ]
     a = db.from_sequence(seq, npartitions=16)
     with tmpdir() as dn:
-        with pytest.warns(None):
-            a.to_textfiles(dn, name_function=str)
+        a.to_textfiles(dn, name_function=str)
 
 
 def test_to_textfiles_encoding():
@@ -1182,7 +1230,8 @@ def test_zip(npartitions, hi=1000):
     evens = db.from_sequence(range(0, hi, 2), npartitions=npartitions)
     odds = db.from_sequence(range(1, hi, 2), npartitions=npartitions)
     pairs = db.zip(evens, odds)
-    assert pairs.npartitions == npartitions
+    assert pairs.npartitions == evens.npartitions
+    assert pairs.npartitions == odds.npartitions
     assert list(pairs) == list(zip(range(0, hi, 2), range(1, hi, 2)))
 
 
@@ -1391,7 +1440,7 @@ def test_reduction_with_sparse_matrices():
 
 
 def test_empty():
-    list(db.from_sequence([])) == []
+    assert list(db.from_sequence([])) == []
 
 
 def test_bag_picklable():
@@ -1560,6 +1609,7 @@ def test_map_releases_element_references_as_soon_as_possible():
 
 
 def test_bagged_array_delayed():
+    pytest.importorskip("numpy")
     da = pytest.importorskip("dask.array")
 
     obj = da.ones(10, chunks=5).to_delayed()[0]
@@ -1583,6 +1633,7 @@ def test_dask_layers():
 def test_dask_layers_to_delayed(optimize):
     # `da.Array.to_delayed` causes the layer name to not match the key.
     # Ensure the layer name is propagated between `Delayed` and `Item`.
+    pytest.importorskip("numpy")
     da = pytest.importorskip("dask.array")
     i = db.Item.from_delayed(da.ones(1).to_delayed()[0])
     name = i.key[0]
@@ -1612,8 +1663,11 @@ def test_dask_layers_to_delayed(optimize):
 
 
 def test_to_dataframe_optimize_graph():
-    pytest.importorskip("dask.dataframe")
+    pytest.importorskip("pandas")
+    dd = pytest.importorskip("dask.dataframe")
+
     from dask.dataframe.utils import assert_eq as assert_eq_df
+    from dask.dataframe.utils import pyarrow_strings_enabled
 
     x = db.from_sequence(
         [{"name": "test1", "v1": 1}, {"name": "test2", "v1": 2}], npartitions=2
@@ -1632,16 +1686,54 @@ def test_to_dataframe_optimize_graph():
     d = y.to_dataframe()
 
     # All the `map` tasks have been fused
-    assert len(d.dask) < len(y.dask)
+    if not dd._dask_expr_enabled():
+        assert len(d.dask) < len(y.dask) + d.npartitions * int(
+            pyarrow_strings_enabled()
+        )
 
     # no optimizations
     d2 = y.to_dataframe(optimize_graph=False)
 
     # Graph hasn't been fused. It contains all the original tasks,
     # plus one extra layer converting to DataFrame
-    assert len(d2.dask) == len(y.dask) + d.npartitions
+    if not dd._dask_expr_enabled():
+        assert len(d2.dask.keys() - y.dask.keys()) == d.npartitions * (
+            1 + int(pyarrow_strings_enabled())
+        )
 
     # Annotations are still there
-    assert hlg_layer_topological(d2.dask, 1).annotations == {"foo": True}
+    if not dd._dask_expr_enabled():
+        assert hlg_layer_topological(d2.dask, 1).annotations == {"foo": True}
 
     assert_eq_df(d, d2)
+
+
+@pytest.mark.parametrize("nworkers", [100, 250, 500, 1000])
+def test_default_partitioning_worker_saturation(nworkers):
+    # Ensure that Dask Bag can saturate any number of workers with concurrent tasks.
+    # The default partitioning scheme partitions items to keep the task to item ratio sensible
+    # but it should always be possible to saturate any number of workers given enough items in the bag.
+    ntasks = 0
+    nitems = 1
+    while ntasks < nworkers:
+        ntasks = len(db.from_sequence(range(nitems)).dask)
+        nitems += math.floor(max(1, nworkers / 10))
+        assert nitems < 20_000
+
+
+@pytest.mark.parametrize("nworkers", [100, 250, 500, 1000])
+def test_npartitions_saturation(nworkers):
+    # If npartitions is set the bag should always contain at least that number of tasks
+    for nitems in range(nworkers, 10 * nworkers, max(1, math.floor(nworkers / 10))):
+        assert (
+            len(db.from_sequence(range(nitems), npartitions=nworkers).dask) >= nworkers
+        )
+
+
+def test_map_total_mem_usage():
+    """https://github.com/dask/dask/issues/10338"""
+    b = db.from_sequence(range(1, 100), npartitions=3)
+    total_mem_b = sum(b.map_partitions(total_mem_usage).compute())
+    c = b.map(lambda x: x)
+    total_mem_c = sum(c.map_partitions(total_mem_usage).compute())
+    assert total_mem_b == total_mem_c

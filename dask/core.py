@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 from collections import defaultdict
+from collections.abc import Collection, Iterable, Mapping
+from typing import Any, Literal, TypeVar, cast, overload
 
-from .utils_test import add, inc  # noqa: F401
-
-no_default = "__no_default__"
+from dask.typing import Graph, Key, NoDefault, no_default
 
 
 def ishashable(x):
@@ -15,6 +17,10 @@ def ishashable(x):
     True
     >>> ishashable([1])
     False
+
+    See Also
+    --------
+    iskey
     """
     try:
         hash(x)
@@ -87,6 +93,8 @@ def _execute_task(arg, cache, dsk=None):
     Examples
     --------
 
+    >>> inc = lambda x: x + 1
+    >>> add = lambda x, y: x + y
     >>> cache = {'x': 1, 'y': 2}
 
     Compute tasks against a cache
@@ -154,11 +162,13 @@ def get(dsk, out, cache=None):
     return result
 
 
-def keys_in_tasks(keys, tasks, as_list=False):
+def keys_in_tasks(keys: Collection[Key], tasks: Iterable[Any], as_list: bool = False):
     """Returns the keys in `keys` that are also in `tasks`
 
     Examples
     --------
+    >>> inc = lambda x: x + 1
+    >>> add = lambda x, y: x + y
     >>> dsk = {'x': 1,
     ...        'y': (inc, 'x'),
     ...        'z': (add, 'x', 'y'),
@@ -189,39 +199,79 @@ def keys_in_tasks(keys, tasks, as_list=False):
     return ret if as_list else set(ret)
 
 
-def find_all_possible_keys(tasks) -> set:
-    """Returns all possible keys in `tasks` including hashable literals.
+def iskey(key: object) -> bool:
+    """Return True if the given object is a potential dask key; False otherwise.
 
-    The definition of a key in a Dask graph is any hashable object
-    that is not a task. This function returns all such objects in
-    `tasks` even if the object is in fact a literal.
+    The definition of a key in a Dask graph is any str, bytes, int, float, or tuple
+    thereof.
 
+    See Also
+    --------
+    ishashable
+    validate_key
+    dask.typing.Key
     """
-    ret = set()
-    while tasks:
-        work = []
-        for w in tasks:
-            typ = type(w)
-            if typ is tuple and w and callable(w[0]):  # istask(w)
-                work.extend(w[1:])
-            elif typ is list:
-                work.extend(w)
-            elif typ is dict:
-                work.extend(w.values())
-            else:
-                try:
-                    ret.add(w)
-                except TypeError:  # not hashable
-                    pass
-        tasks = work
-    return ret
+    typ = type(key)
+    if typ is tuple:
+        return all(iskey(i) for i in cast(tuple, key))
+    return typ in {bytes, int, float, str}
 
 
-def get_dependencies(dsk, key=None, task=no_default, as_list=False):
+def validate_key(key: object) -> None:
+    """Validate the format of a dask key.
+
+    See Also
+    --------
+    iskey
+    """
+    if iskey(key):
+        return
+    typ = type(key)
+
+    if typ is tuple:
+        index = None
+        try:
+            for index, part in enumerate(cast(tuple, key)):  # noqa: B007
+                validate_key(part)
+        except TypeError as e:
+            raise TypeError(
+                f"Composite key contains unexpected key type at {index=} ({key=!r})"
+            ) from e
+    raise TypeError(f"Unexpected key type {typ} ({key=!r})")
+
+
+@overload
+def get_dependencies(
+    dsk: Graph,
+    key: Key | None = ...,
+    task: Key | NoDefault = ...,
+    as_list: Literal[False] = ...,
+) -> set[Key]:
+    ...
+
+
+@overload
+def get_dependencies(
+    dsk: Graph,
+    key: Key | None,
+    task: Key | NoDefault,
+    as_list: Literal[True],
+) -> list[Key]:
+    ...
+
+
+def get_dependencies(
+    dsk: Graph,
+    key: Key | None = None,
+    task: Key | NoDefault = no_default,
+    as_list: bool = False,
+) -> set[Key] | list[Key]:
     """Get the immediate tasks on which this task depends
 
     Examples
     --------
+    >>> inc = lambda x: x + 1
+    >>> add = lambda x, y: x + y
     >>> dsk = {'x': 1,
     ...        'y': (inc, 'x'),
     ...        'z': (add, 'x', 'y'),
@@ -256,9 +306,10 @@ def get_dependencies(dsk, key=None, task=no_default, as_list=False):
     return keys_in_tasks(dsk, [arg], as_list=as_list)
 
 
-def get_deps(dsk):
+def get_deps(dsk: Graph) -> tuple[dict[Key, set[Key]], dict[Key, set[Key]]]:
     """Get dependencies and dependents from dask dask graph
 
+    >>> inc = lambda x: x + 1
     >>> dsk = {'a': 1, 'b': (inc, 'a'), 'c': (inc, 'b')}
     >>> dependencies, dependents = get_deps(dsk)
     >>> dependencies
@@ -299,7 +350,10 @@ def flatten(seq, container=list):
                 yield item
 
 
-def reverse_dict(d):
+T_ = TypeVar("T_")
+
+
+def reverse_dict(d: Mapping[T_, Iterable[T_]]) -> dict[T_, set[T_]]:
     """
 
     >>> a, b, c = 'abc'
@@ -307,14 +361,13 @@ def reverse_dict(d):
     >>> reverse_dict(d)  # doctest: +SKIP
     {'a': set([]), 'b': set(['a']}, 'c': set(['a', 'b'])}
     """
-    result = defaultdict(set)
+    result: defaultdict[T_, set[T_]] = defaultdict(set)
     _add = set.add
     for k, vals in d.items():
         result[k]
         for val in vals:
             _add(result[val], k)
-    result.default_factory = None
-    return result
+    return dict(result)
 
 
 def subs(task, key, val):
@@ -322,6 +375,8 @@ def subs(task, key, val):
 
     Examples
     --------
+    >>> def inc(x):
+    ...     return x + 1
 
     >>> subs((inc, 'x'), 'x', 1)  # doctest: +ELLIPSIS
     (<function inc at ...>, 1)
@@ -397,11 +452,33 @@ def _toposort(dsk, keys=None, returncycle=False, dependencies=None):
                 if nxt not in completed:
                     if nxt in seen:
                         # Cycle detected!
-                        cycle = [nxt]
+                        # Let's report only the nodes that directly participate in the cycle.
+                        # We use `priorities` below to greedily construct a short cycle.
+                        # Shorter cycles may exist.
+                        priorities = {}
+                        prev = nodes[-1]
+                        # Give priority to nodes that were seen earlier.
                         while nodes[-1] != nxt:
-                            cycle.append(nodes.pop())
-                        cycle.append(nodes.pop())
+                            priorities[nodes.pop()] = -len(priorities)
+                        priorities[nxt] = -len(priorities)
+                        # We're going to get the cycle by walking backwards along dependents,
+                        # so calculate dependents only for the nodes in play.
+                        inplay = set(priorities)
+                        dependents = reverse_dict(
+                            {k: inplay.intersection(dependencies[k]) for k in inplay}
+                        )
+                        # Begin with the node that was seen twice and the node `prev` from
+                        # which we detected the cycle.
+                        cycle = [nodes.pop()]
+                        cycle.append(prev)
+                        while prev != cycle[0]:
+                            # Greedily take a step that takes us closest to completing the cycle.
+                            # This may not give us the shortest cycle, but we get *a* short cycle.
+                            deps = dependents[cycle[-1]]
+                            prev = min(deps, key=priorities.__getitem__)
+                            cycle.append(prev)
                         cycle.reverse()
+
                         if returncycle:
                             return cycle
                         else:
@@ -438,6 +515,7 @@ def getcycle(d, keys):
     Examples
     --------
 
+    >>> inc = lambda x: x + 1
     >>> d = {'x': (inc, 'z'), 'y': (inc, 'x'), 'z': (inc, 'y')}
     >>> getcycle(d, 'x')
     ['x', 'z', 'y', 'x']
@@ -457,6 +535,7 @@ def isdag(d, keys):
     Examples
     --------
 
+    >>> inc = lambda x: x + 1
     >>> inc = lambda x: x + 1
     >>> isdag({'x': 0, 'y': (inc, 'x')}, 'y')
     True
@@ -494,6 +573,7 @@ def quote(x):
     Some values in dask graph take on special meaning. Sometimes we want to
     ensure that our data is not interpreted but remains literal.
 
+    >>> add = lambda x, y: x + y
     >>> quote((add, 1, 2))
     (literal<type=tuple>,)
     """

@@ -31,168 +31,49 @@ Before reading this you should read and understand:
 The Dask Collection Interface
 -----------------------------
 
-To create your own Dask collection, you need to fulfill the following
-interface. Note that there is no required base class.
+To create your own Dask collection, you need to fulfill the interface
+defined by the :py:class:`dask.typing.DaskCollection` protocol. Note
+that there is no required base class.
 
 It is recommended to also read :ref:`core-method-internals` to see how this
 interface is used inside Dask.
 
+Collection Protocol
+~~~~~~~~~~~~~~~~~~~~
 
-.. method:: __dask_graph__(self)
+.. autoclass:: dask.typing.DaskCollection
+   :members: __dask_graph__, __dask_keys__, __dask_postcompute__,
+             __dask_postpersist__, __dask_tokenize__,
+             __dask_optimize__, __dask_scheduler__, compute, persist,
+             visualize
 
-    The Dask graph.
+HLG Collection Protocol
+~~~~~~~~~~~~~~~~~~~~~~~
 
-    **Returns**
+Collections backed by Dask's :ref:`high-level-graphs` must implement
+an additional method, defined by this protocol:
 
-    dsk : Mapping, None
-        The Dask graph.  If ``None``, this instance will not be interpreted as a
-        Dask collection, and none of the remaining interface methods will be
-        called.
+.. autoclass:: dask.typing.HLGDaskCollection
+   :members: __dask_layers__
 
-    If the collection also specifies :meth:`__dask_layers__`, then ``dsk`` must be a
-    :class:`~dask.highlevelgraph.HighLevelGraph` or ``None``.
+Scheduler ``get`` Protocol
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+The ``SchedulerGetProtocol`` defines the signature that a Dask
+collection's ``__dask_scheduler__`` definition must adhere to.
 
-.. method:: __dask_keys__(self)
+.. autoclass:: dask.typing.SchedulerGetCallable
+   :members: __call__
 
-    The output keys for the Dask graph.
+Post-persist Callable Protocol
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    Note that there are additional constraints on keys for a Dask collection
-    than those described in the :doc:`task graph specification documentation <spec>`.
-    These additional constraints are described below.
+Collections must define a ``__dask_postpersist__`` method which
+returns a callable that adheres to the ``PostPersistCallable``
+interface.
 
-    **Returns**
-
-    keys : list
-        A possibly nested list of keys that represent the outputs of the graph.
-        After computation, the results will be returned in the same layout,
-        with the keys replaced with their corresponding outputs.
-
-    All keys must either be non-empty strings or tuples where the first element is a
-    non-empty string, followed by zero or more arbitrary hashables.
-    The non-empty string is commonly known as the *collection name*. All collections
-    embedded in the dask package have exactly one name, but this is not a requirement.
-
-    These are all valid outputs:
-
-    - ``[]``
-    - ``["x", "y"]``
-    - ``[[("y", "a", 0), ("y", "a", 1)], [("y", "b", 0), ("y", "b", 1)]``
-
-
-.. method:: __dask_layers__(self)
-
-    This method only needs to be implemented if the collection uses
-    :class:`~dask.highlevelgraph.HighLevelGraph` to implement its dask graph.
-
-    **Returns**
-
-    names : tuple
-        Tuple of names of the HighLevelGraph layers which contain all keys returned by
-        :meth:`__dask_keys__`.
-
-
-.. staticmethod:: __dask_optimize__(dsk, keys, \*\*kwargs)
-
-    Given a graph and keys, return a new optimized graph.
-
-    This method can be either a ``staticmethod`` or a ``classmethod``, but not
-    an ``instancemethod``.
-
-    Note that graphs and keys are merged before calling ``__dask_optimize__``;
-    as such, the graph and keys passed to this method may represent more than
-    one collection sharing the same optimize method.
-
-    If not implemented, defaults to returning the graph unchanged.
-
-    **Parameters**
-
-    dsk : MutableMapping
-        The merged graphs from all collections sharing the same
-        ``__dask_optimize__`` method.
-    keys : list
-        A list of the outputs from ``__dask_keys__`` from all collections
-        sharing the same ``__dask_optimize__`` method.
-    \*\*kwargs
-        Extra keyword arguments forwarded from the call to ``compute`` or
-        ``persist``. Can be used or ignored as needed.
-
-    **Returns**
-
-    optimized_dsk : MutableMapping
-        The optimized Dask graph.
-
-
-.. staticmethod:: __dask_scheduler__(dsk, keys, \*\*kwargs)
-
-    The default scheduler ``get`` to use for this object.
-
-    Usually attached to the class as a staticmethod, e.g.:
-
-    >>> import dask.threaded
-    >>> class MyCollection:
-    ...     # Use the threaded scheduler by default
-    ...     __dask_scheduler__ = staticmethod(dask.threaded.get)
-
-
-.. method:: __dask_postcompute__(self)
-
-    Return the finalizer and (optional) extra arguments to convert the computed
-    results into their in-memory representation.
-
-    Used to implement ``dask.compute``.
-
-    **Returns**
-
-    finalize : callable
-        A function with the signature ``finalize(results, *extra_args)``.
-        Called with the computed results in the same structure as the
-        corresponding keys from ``__dask_keys__``, as well as any extra
-        arguments as specified in ``extra_args``. Should perform any necessary
-        finalization before returning the corresponding in-memory collection
-        from ``compute``. For example, the ``finalize`` function for
-        ``dask.array.Array`` concatenates all the individual array chunks into
-        one large numpy array, which is then the result of ``compute``.
-    extra_args : tuple
-        Any extra arguments to pass to ``finalize`` after ``results``. If no
-        extra arguments should be an empty tuple.
-
-
-.. method:: __dask_postpersist__(self)
-
-    Return the rebuilder and (optional) extra arguments to rebuild an equivalent
-    Dask collection from a persisted or rebuilt graph.
-
-    Used to implement :func:`dask.persist`.
-
-    **Returns**
-
-    rebuild : callable
-        A function with the signature
-        ``rebuild(dsk, *extra_args, rename : Mapping[str, str] = None)``.
-        ``dsk`` is a Mapping which contains at least the output keys returned by
-        :meth:`__dask_keys__`. The callable should return an equivalent Dask collection
-        with the same keys as ``self``, but with the results that are computed through a
-        different graph. In the case of :func:`dask.persist`, the new graph will have
-        just the output keys and the values already computed.
-
-        If the optional parameter ``rename`` is specified, it indicates that output
-        keys may be changing too; e.g. if the previous output of :meth:`__dask_keys__`
-        was ``[("a", 0), ("a", 1)]``, after calling
-        ``rebuild(dsk, *extra_args, rename={"a": "b"})`` it must become
-        ``[("b", 0), ("b", 1)]``.
-        The ``rename`` mapping may not contain the collection name(s); in such case the
-        associated keys do not change. It may contain replacements for unexpected names,
-        which must be ignored.
-
-    extra_args : tuple
-        Any extra arguments to pass to ``rebuild`` after ``dsk``. If no extra
-        arguments are necessary, it must be an empty tuple.
-
-
-.. note:: It's also recommended to define ``__dask_tokenize__``,
-          see :ref:`deterministic-hashing`.
-
+.. autoclass:: dask.typing.PostPersistCallable
+   :members: __call__
 
 .. _core-method-internals:
 
@@ -480,8 +361,17 @@ elements of ``dask.delayed``:
     from dask.base import DaskMethodsMixin, replace_name_in_key
     from dask.optimization import cull
 
-    # We subclass from DaskMethodsMixin to add common dask methods to our
-    # class. This is nice but not necessary for creating a dask collection.
+    def tuple_optimize(dsk, keys, **kwargs):
+        # We cull unnecessary tasks here. See
+        # https://docs.dask.org/en/stable/optimize.html for more
+        # information on optimizations in Dask.
+        dsk2, _ = cull(dsk, keys)
+        return dsk2
+
+    # We subclass from DaskMethodsMixin to add common dask methods to
+    # our class (compute, persist, and visualize). This is nice but not
+    # necessary for creating a Dask collection (you can define them
+    # yourself).
     class Tuple(DaskMethodsMixin):
         def __init__(self, dsk, keys):
             # The init method takes in a dask graph and a set of keys to use
@@ -495,13 +385,8 @@ elements of ``dask.delayed``:
         def __dask_keys__(self):
             return self._keys
 
-        @staticmethod
-        def __dask_optimize__(dsk, keys, **kwargs):
-            # We cull unnecessary tasks here. Note that this isn't necessary,
-            # dask will do this automatically, this just shows one optimization
-            # you could do.
-            dsk2, _ = cull(dsk, keys)
-            return dsk2
+        # use the `tuple_optimize` function defined above
+        __dask_optimize__ = staticmethod(tuple_optimize)
 
         # Use the threaded scheduler by default.
         __dask_scheduler__ = staticmethod(dask.threaded.get)
@@ -545,7 +430,7 @@ Demonstrating this class:
 
     # The output keys for this graph.
     # The first element of each tuple must be the same across the whole collection;
-    # the remainder are arbitrary, unique hashables
+    # the remainder are arbitrary, unique str, bytes, int, or floats
     >>> keys = [("x", "k1"), ("x", 1), ("x", 2), ("x", 3)]
 
     >>> x = Tuple(dsk, keys)
@@ -562,6 +447,11 @@ Demonstrating this class:
     {('x', 'k1'): 2, ('x', 1): 3, ('x', 2): 4, ('x', 3): 5}
     >>> x2.compute()
     (2, 3, 4, 5)
+
+    # Run-time typechecking
+    >>> from dask.typing import DaskCollection
+    >>> isinstance(x, DaskCollection)
+    True
 
 
 .. _is-dask-collection:
@@ -601,7 +491,8 @@ implementation. There are two ways to do this:
 
    Where possible, it is recommended to define the ``__dask_tokenize__`` method.
    This method takes no arguments and should return a value fully
-   representative of the object.
+   representative of the object. It is a good idea to call ``dask.base.normalize_token``
+   from it before returning any non-trivial objects.
 
 2. Register a function with ``dask.base.normalize_token``
 
@@ -627,38 +518,41 @@ Example
     >>> from dask.base import tokenize, normalize_token
 
     # Define a tokenize implementation using a method.
-    >>> class Foo:
-    ...     def __init__(self, a, b):
-    ...         self.a = a
-    ...         self.b = b
-    ...
-    ...     def __dask_tokenize__(self):
-    ...         # This tuple fully represents self
-    ...         return (Foo, self.a, self.b)
-
-    >>> x = Foo(1, 2)
-    >>> tokenize(x)
-    '5988362b6e07087db2bc8e7c1c8cc560'
-    >>> tokenize(x) == tokenize(x)  # token is deterministic
-    True
-
-    # Register an implementation with normalize_token
-    >>> class Bar:
+    >>> class Point:
     ...     def __init__(self, x, y):
     ...         self.x = x
     ...         self.y = y
+    ...
+    ...     def __dask_tokenize__(self):
+    ...         # This tuple fully represents self
+    ...         # Wrap non-trivial objects with normalize_token before returning them
+    ...         return normalize_token(Point), self.x, self.y
 
-    >>> @normalize_token.register(Bar)
-    ... def tokenize_bar(x):
-    ...     return (Bar, x.x, x.x)
+    >>> x = Point(1, 2)
+    >>> tokenize(x)
+    '5988362b6e07087db2bc8e7c1c8cc560'
+    >>> tokenize(x) == tokenize(x)  # token is idempotent
+    True
+    >>> tokenize(Point(1, 2)) == tokenize(Point(1, 2))  # token is deterministic
+    True
+    >>> tokenize(Point(1, 2)) == tokenize(Point(2, 1))  # tokens are unique
+    False
 
-    >>> y = Bar(1, 2)
+
+    # Register an implementation with normalize_token
+    >>> class Point3D:
+    ...     def __init__(self, x, y, z):
+    ...         self.x = x
+    ...         self.y = y
+    ...         self.z = z
+
+    >>> @normalize_token.register(Point3D)
+    ... def normalize_point3d(x):
+    ...     return normalize_token(Point3D), x.x, x.y, x.z
+
+    >>> y = Point3D(1, 2, 3)
     >>> tokenize(y)
     '5a7e9c3645aa44cf13d021c14452152e'
-    >>> tokenize(y) == tokenize(y)
-    True
-    >>> tokenize(y) == tokenize(x)  # tokens for different objects aren't equal
-    False
 
 
 For more examples, see ``dask/base.py`` or any of the built-in Dask collections.

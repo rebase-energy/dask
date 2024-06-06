@@ -1,16 +1,14 @@
-import sys
+from __future__ import annotations
 
-from packaging.version import parse as parse_version
+import warnings
 
-try:
-    from math import prod
-except ImportError:
-    # Python < 3.8
-    def prod(iterable, *, start=1):  # type: ignore
-        acc = start
-        for el in iterable:
-            acc *= el
-        return acc
+from dask._compatibility import EMSCRIPTEN as _EMSCRIPTEN  # noqa
+from dask._compatibility import PY_VERSION as _PY_VERSION  # noqa
+from dask._compatibility import entry_points, parse_version  # noqa
 
-
-_PY_VERSION = parse_version(".".join(map(str, sys.version_info[:3])))
+warnings.warn(
+    "`dask.compatibility` is not intended for external use and has been renamed to `dask._compatibility`. "
+    "This backward-compatible shim will be removed in a future release. Please find an alternative.",
+    DeprecationWarning,
+    stacklevel=2,
+)

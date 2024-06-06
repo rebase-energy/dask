@@ -1,10 +1,12 @@
 """
 Control global computation context
 """
+from __future__ import annotations
+
 import threading
 from functools import partial
 
-from . import config
+from dask import config
 
 _globals = config.config
 

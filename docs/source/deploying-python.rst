@@ -58,6 +58,9 @@ keyword arguments available on ``LocalCluster`` to understand the options availa
 to you on handling the mixture of threads and processes, like specifying explicit
 ports, and so on.
 
+To create a local cluster with all workers running in dedicated subprocesses, 
+``dask.distributed`` also offers the experimental ``SubprocessCluster``.
+
 Cluster manager features
 ------------------------
 
@@ -65,14 +68,14 @@ Instantiating a cluster manager class like ``LocalCluster`` and then passing it 
 ``Client`` is a common pattern. Cluster managers also provide useful utilities to help
 you understand what is going on.
 
-For example you can retreive the Dashboard URL.
+For example you can retrieve the Dashboard URL.
 
 .. code-block:: python
 
    >>> cluster.dashboard_link
    'http://127.0.0.1:8787/status'
 
-You can retreive logs from cluster components.
+You can retrieve logs from cluster components.
 
 .. code-block:: python
 

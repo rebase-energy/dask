@@ -1,20 +1,15 @@
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 from pandas.core.resample import Resampler as pd_Resampler
 
-from ...base import tokenize
-from ...highlevelgraph import HighLevelGraph
-from ...utils import derived_from
-from .. import methods
-from .._compat import PANDAS_GT_140
-from ..core import DataFrame, Series
-
-
-def getnanos(rule):
-    try:
-        return getattr(rule, "nanos", None)
-    except ValueError:
-        return None
+from dask.base import tokenize
+from dask.dataframe import methods
+from dask.dataframe._compat import PANDAS_GE_140
+from dask.dataframe.core import DataFrame, Series
+from dask.highlevelgraph import HighLevelGraph
+from dask.utils import derived_from
 
 
 def _resample_series(
@@ -33,7 +28,7 @@ def _resample_series(
         *how_args, **how_kwargs
     )
 
-    if PANDAS_GT_140:
+    if PANDAS_GE_140:
         if reindex_closed is None:
             inclusive = "both"
         else:
@@ -70,7 +65,7 @@ def _resample_bin_and_out_divs(divisions, rule, closed="left", label="left"):
     tempdivs = temp.loc[temp > 0].index
 
     # Cleanup closed == 'right' and label == 'right'
-    res = pd.offsets.Nano() if hasattr(rule, "delta") else pd.offsets.Day()
+    res = pd.offsets.Nano() if isinstance(rule, pd.offsets.Tick) else pd.offsets.Day()
     if g.closed == "right":
         newdivs = tempdivs + res
     else:
@@ -132,7 +127,14 @@ class Resampler:
         self._rule = pd.tseries.frequencies.to_offset(rule)
         self._kwargs = kwargs
 
-    def _agg(self, how, meta=None, fill_value=np.nan, how_args=(), how_kwargs={}):
+    def _agg(
+        self,
+        how,
+        meta=None,
+        fill_value=np.nan,
+        how_args=(),
+        how_kwargs=None,
+    ):
         """Aggregate using one or more operations
 
         Parameters
@@ -151,6 +153,9 @@ class Resampler:
         -------
         Dask DataFrame or Series
         """
+        if how_kwargs is None:
+            how_kwargs = {}
+
         rule = self._rule
         kwargs = self._kwargs
         name = "resample-" + tokenize(

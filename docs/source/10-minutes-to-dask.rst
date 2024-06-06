@@ -1,10 +1,19 @@
 10 Minutes to Dask
 ==================
 
-This is a short overview of what you can do with Dask. It is geared towards new users.
+.. meta::
+    :description: This is a short overview of Dask geared towards new users. Additional Dask information can be found in the rest of the Dask documentation.
+
+This is a short overview of Dask geared towards new users.
 There is much more information contained in the rest of the documentation.
 
-We normally import dask as follows:
+.. figure:: images/dask-overview.svg
+   :alt: Dask overview. Dask is composed of three parts: collections, task graphs, and schedulers.
+   :align: center
+
+   High level collections are used to generate task graphs which can be executed by schedulers on a single machine or a cluster.
+
+We normally import Dask as follows:
 
 .. code-block:: python
 
@@ -17,19 +26,23 @@ We normally import dask as follows:
 
 Based on the type of data you are working with, you might not need all of these.
 
-Create a High-Level Collection
-------------------------------
+Creating a Dask Object
+----------------------
 
-You can make a Dask collection from scratch by supplying existing data and optionally
+You can create a Dask object from scratch by supplying existing data and optionally
 including information about how the chunks should be structured.
 
-.. tabs::
 
-   .. group-tab:: DataFrame
+.. tab-set::
+
+   .. tab-item:: DataFrame
+      :sync: dataframe
+
+      See :doc:`dataframe`.
 
       .. code-block:: python
 
-         >>> index = pd.date_range("2021-09-01", periods=2400, freq="1H")
+         >>> index = pd.date_range("2021-09-01", periods=2400, freq="1h")
          ... df = pd.DataFrame({"a": np.arange(2400), "b": list("abcaddbe" * 300)}, index=index)
          ... ddf = dd.from_pandas(df, npartitions=10)
          ... ddf
@@ -43,10 +56,10 @@ including information about how the chunks should be structured.
          2021-12-09 23:00:00    ...     ...
          Dask Name: from_pandas, 10 tasks
 
-      Now we have a DataFrame with 2 columns and 2400 rows composed of 10 partitions where
+      Now we have a Dask DataFrame with 2 columns and 2400 rows composed of 10 partitions where
       each partition has 240 rows. Each partition represents a piece of the data.
 
-      Here are some key properties of an DataFrame:
+      Here are some key properties of a DataFrame:
 
       .. code-block:: python
 
@@ -73,31 +86,39 @@ including information about how the chunks should be structured.
          2021-09-21       ...     ...
          Dask Name: blocks, 11 tasks
 
-   .. group-tab:: Array
+   .. tab-item:: Array
+      :sync: array
 
-      .. code-block:: python
+      See :doc:`array`.
 
-         >>> data = np.arange(100_000).reshape(200, 500)
-         ... a = da.from_array(data, chunks=(100, 100))
-         ... a
-         dask.array<array, shape=(200, 500), dtype=int64, chunksize=(100, 100), chunktype=numpy.ndarray>
+      .. jupyter-execute::
+
+         import numpy as np
+         import dask.array as da
+
+         data = np.arange(100_000).reshape(200, 500)
+         a = da.from_array(data, chunks=(100, 100))
+         a
 
       Now we have a 2D array with the shape (200, 500) composed of 10 chunks where
       each chunk has the shape (100, 100). Each chunk represents a piece of the data.
 
-      Here are some key properties of an Array:
+      Here are some key properties of a Dask Array:
 
-      .. code-block:: python
+      .. jupyter-execute::
 
-         >>> # inspect the chunks
-         ... a.chunks
-         ((100, 100), (100, 100, 100, 100, 100))
+         # inspect the chunks
+         a.chunks
 
-         >>> # access a particular block of data
-         ... a.blocks[1, 3]
-         dask.array<blocks, shape=(100, 100), dtype=int64, chunksize=(100, 100), chunktype=numpy.ndarray>
+      .. jupyter-execute::        
+            
+         # access a particular block of data
+         a.blocks[1, 3]
 
-   .. group-tab:: Bag
+   .. tab-item:: Bag
+      :sync: bag
+
+      See :doc:`bag`.
 
       .. code-block:: python
 
@@ -112,11 +133,12 @@ including information about how the chunks should be structured.
 Indexing
 --------
 
-Indexing Dask collections feels just like slicing numpy arrays or pandas dataframes.
+Indexing Dask collections feels just like slicing NumPy arrays or pandas DataFrame.
 
-.. tabs::
+.. tab-set::
 
-   .. group-tab:: DataFrame
+   .. tab-item:: DataFrame
+      :sync: dataframe
 
       .. code-block:: python
 
@@ -139,14 +161,15 @@ Indexing Dask collections feels just like slicing numpy arrays or pandas datafra
          2021-10-09 05:00:59.999999999    ...     ...
          Dask Name: loc, 11 tasks
 
-   .. group-tab:: Array
+   .. tab-item:: Array
+      :sync: array
 
-      .. code-block:: python
+      .. jupyter-execute::
 
-         >>> a[:50, 200]
-         dask.array<getitem, shape=(50,), dtype=int64, chunksize=(50,), chunktype=numpy.ndarray>
+         a[:50, 200]
 
-   .. group-tab:: Bag
+   .. tab-item:: Bag
+      :sync: bag
 
       A Bag is an unordered collection allowing repeats. So it is like a list, but it doesn’t
       guarantee an ordering among elements. There is no way to index Bags since they are
@@ -161,9 +184,10 @@ you ask for it. Instead, a Dask task graph for the computation is produced.
 
 Anytime you have a Dask object and you want to get the result, call ``compute``:
 
-.. tabs::
+.. tab-set::
 
-   .. group-tab:: DataFrame
+   .. tab-item:: DataFrame
+      :sync: dataframe
 
       .. code-block:: python
 
@@ -183,7 +207,8 @@ Anytime you have a Dask object and you want to get the result, call ``compute``:
 
          [198 rows x 2 columns]
 
-   .. group-tab:: Array
+   .. tab-item:: Array
+      :sync: array
 
       .. code-block:: python
 
@@ -195,7 +220,8 @@ Anytime you have a Dask object and you want to get the result, call ``compute``:
                18200, 18700, 19200, 19700, 20200, 20700, 21200, 21700, 22200,
                22700, 23200, 23700, 24200, 24700])
 
-   .. group-tab:: Bag
+   .. tab-item:: Bag
+      :sync: bag
 
       .. code-block:: python
 
@@ -209,9 +235,10 @@ Methods
 Dask collections match existing numpy and pandas methods, so they should feel familiar.
 Call the method to set up the task graph, and then call ``compute`` to get the result.
 
-.. tabs::
+.. tab-set::
 
-   .. group-tab:: DataFrame
+   .. tab-item:: DataFrame
+      :sync: dataframe
 
       .. code-block:: python
 
@@ -264,7 +291,8 @@ Call the method to set up the task graph, and then call ``compute`` to get the r
          2021-10-09 05:00:00    161963
          Freq: H, Name: a, Length: 198, dtype: int64
 
-   .. group-tab:: Array
+   .. tab-item:: Array
+      :sync: array
 
       .. code-block:: python
 
@@ -316,7 +344,8 @@ Call the method to set up the task graph, and then call ``compute`` to get the r
          array([100009,  99509,  99009,  98509,  98009,  97509,  97009,  96509,
                96009,  95509])
 
-   .. group-tab:: Bag
+   .. tab-item:: Bag
+      :sync: bag
 
       Dask Bag implements operations like ``map``, ``filter``, ``fold``, and
       ``groupby`` on collections of generic Python objects.
@@ -353,57 +382,60 @@ Visualize the Task Graph
 So far we've been setting up computations and calling ``compute``. In addition to
 triggering computation, we can inspect the task graph to figure out what's going on.
 
-.. tabs::
+.. tab-set::
 
-   .. group-tab:: DataFrame
+   .. tab-item:: DataFrame
+      :sync: dataframe
 
       .. code-block:: python
 
          >>> result.dask
          HighLevelGraph with 7 layers.
          <dask.highlevelgraph.HighLevelGraph object at 0x7f129df7a9d0>
-         0. from_pandas-0b850a81e4dfe2d272df4dc718065116
-         1. loc-fb7ada1e5ba8f343678fdc54a36e9b3e
-         2. getitem-55d10498f88fc709e600e2c6054a0625
-         3. series-cumsum-map-131dc242aeba09a82fea94e5442f3da9
-         4. series-cumsum-take-last-9ebf1cce482a441d819d8199eac0f721
-         5. series-cumsum-d51d7003e20bd5d2f767cd554bdd5299
-         6. sub-fed3e4af52ad0bd9c3cc3bf800544f57
+         1. from_pandas-0b850a81e4dfe2d272df4dc718065116
+         2. loc-fb7ada1e5ba8f343678fdc54a36e9b3e
+         3. getitem-55d10498f88fc709e600e2c6054a0625
+         4. series-cumsum-map-131dc242aeba09a82fea94e5442f3da9
+         5. series-cumsum-take-last-9ebf1cce482a441d819d8199eac0f721
+         6. series-cumsum-d51d7003e20bd5d2f767cd554bdd5299
+         7. sub-fed3e4af52ad0bd9c3cc3bf800544f57
 
          >>> result.visualize()
 
       .. image:: images/10_minutes_dataframe_graph.png
          :alt: Dask task graph for the Dask dataframe computation. The task graph shows a "loc" and "getitem" operations selecting a small section of the dataframe values, before applying a cumulative sum "cumsum" operation, then finally subtracting a value from the result.
 
-   .. group-tab:: Array
+   .. tab-item:: Array
+      :sync: array
 
       .. code-block:: python
 
          >>> b.dask
          HighLevelGraph with 6 layers.
          <dask.highlevelgraph.HighLevelGraph object at 0x7fd33a4aa400>
-         0. array-ef3148ecc2e8957c6abe629e08306680
-         1. amax-b9b637c165d9bf139f7b93458cd68ec3
-         2. amax-partial-aaf8028d4a4785f579b8d03ffc1ec615
-         3. amax-aggregate-07b2f92aee59691afaf1680569ee4a63
-         4. getitem-f9e225a2fd32b3d2f5681070d2c3d767
-         5. add-f54f3a929c7efca76a23d6c42cdbbe84
+         1. array-ef3148ecc2e8957c6abe629e08306680
+         2. amax-b9b637c165d9bf139f7b93458cd68ec3
+         3. amax-partial-aaf8028d4a4785f579b8d03ffc1ec615
+         4. amax-aggregate-07b2f92aee59691afaf1680569ee4a63
+         5. getitem-f9e225a2fd32b3d2f5681070d2c3d767
+         6. add-f54f3a929c7efca76a23d6c42cdbbe84
 
          >>> b.visualize()
 
       .. image:: images/10_minutes_array_graph.png
          :alt: Dask task graph for the Dask array computation. The task graph shows many "amax" operations on each chunk of the Dask array, that are then aggregated to find "amax" along the first array axis, then reversing the order of the array values with a "getitem" slicing operation, before an "add" operation to get the final result.
 
-   .. group-tab:: Bag
+   .. tab-item:: Bag
+      :sync: bag
 
       .. code-block:: python
 
          >>> c.dask
          HighLevelGraph with 3 layers.
          <dask.highlevelgraph.HighLevelGraph object at 0x7f96d0814fd0>
-         0. from_sequence-cca2a33ba6e12645a0c9bc0fd3fe6c88
-         1. lambda-93a7a982c4231fea874e07f71b4bcd7d
-         2. zip-474300792cc4f502f1c1f632d50e0272
+         1. from_sequence-cca2a33ba6e12645a0c9bc0fd3fe6c88
+         2. lambda-93a7a982c4231fea874e07f71b4bcd7d
+         3. zip-474300792cc4f502f1c1f632d50e0272
 
          >>> c.visualize()
 
@@ -415,11 +447,11 @@ Low-Level Interfaces
 Often when parallelizing existing code bases or building custom algorithms, you
 run into code that is parallelizable, but isn't just a big DataFrame or array.
 
-.. tabs::
+.. tab-set::
 
-   .. group-tab:: Delayed: Lazy
+   .. tab-item:: Delayed: Lazy
 
-      Dask Delayed let you to wrap individual function calls into a lazily constructed task graph:
+      :doc:`delayed` lets you to wrap individual function calls into a lazily constructed task graph:
 
       .. code-block:: python
 
@@ -439,10 +471,10 @@ run into code that is parallelizable, but isn't just a big DataFrame or array.
 
          c = c.compute()  # This triggers all of the above computations
 
-   .. group-tab:: Futures: Immediate
+   .. tab-item:: Futures: Immediate
 
       Unlike the interfaces described so far, Futures are eager. Computation starts as soon
-      as the function is submitted.
+      as the function is submitted (see :doc:`futures`).
 
       .. code-block:: python
 
@@ -471,18 +503,22 @@ run into code that is parallelizable, but isn't just a big DataFrame or array.
 Scheduling
 ----------
 
-After you have generated a task graph, it is the scheduler's job to execute it.
+After you have generated a task graph, it is the scheduler's job to execute it
+(see :doc:`scheduling`).
 
-By default when you call ``compute`` on a Dask object, Dask uses the thread
-pool on your computer to run computations in parallel.
+By default, for the majority of Dask APIs, when you call ``compute`` on a Dask object, 
+Dask uses the thread pool on your computer (a.k.a threaded scheduler) to run computations in parallel.
+This is true for :doc:`Dask Array <array>`, :doc:`Dask DataFrame <dataframe>`, 
+and :doc:`Dask Delayed <delayed>`. The exception being :doc:`Dask Bag <bag>`
+which uses the multiprocessing scheduler by default.
 
 If you want more control, use the distributed scheduler instead. Despite having
 "distributed" in it's name, the distributed scheduler works well
 on both single and multiple machines. Think of it as the "advanced scheduler".
 
-.. tabs::
+.. tab-set::
 
-   .. group-tab:: Local
+   .. tab-item:: Local
 
       This is how you set up a cluster that uses only your own computer.
 
@@ -494,7 +530,7 @@ on both single and multiple machines. Think of it as the "advanced scheduler".
          ... client
          <Client: 'tcp://127.0.0.1:41703' processes=4 threads=12, memory=31.08 GiB>
 
-   .. group-tab:: Remote
+   .. tab-item:: Remote
 
       This is how you connect to a cluster that is already running.
 
@@ -524,4 +560,4 @@ see your tasks as they are processed.
    >>> client.dashboard_link
    'http://127.0.0.1:8787/status'
 
-To learn more about those graphs take a look at :doc:`diagnostics-distributed`.
+To learn more about those graphs take a look at :doc:`dashboard`.

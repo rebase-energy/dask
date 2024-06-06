@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import pytest
 
 pytest.importorskip("numpy")
@@ -57,6 +59,11 @@ def test_full_detects_da_dtype():
         assert a.dtype == x.dtype
         assert_eq(a, np.full(shape=(3, 3), fill_value=100))
     assert len(record) == 1
+
+
+def test_full_none_dtype():
+    a = da.full(shape=(3, 3), fill_value=100, dtype=None)
+    assert_eq(a, np.full(shape=(3, 3), fill_value=100, dtype=None))
 
 
 def test_full_like_error_nonscalar_fill_value():

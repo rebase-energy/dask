@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import pytest
 
 pytest.importorskip("numpy")
@@ -9,9 +11,14 @@ from tlz import concat
 import dask
 import dask.array as da
 from dask.array.core import normalize_chunks
+from dask.array.numpy_compat import AxisError
 from dask.array.utils import assert_eq, same_keys
 
 
+@pytest.mark.parametrize(
+    "backend",
+    ["numpy", pytest.param("cupy", marks=pytest.mark.gpu)],
+)
 @pytest.mark.parametrize(
     "funcname",
     [
@@ -31,45 +38,53 @@ from dask.array.utils import assert_eq, same_keys
 @pytest.mark.parametrize("name", [None, "my-name"])
 @pytest.mark.parametrize("order", ["C", "F"])
 @pytest.mark.parametrize("dtype", ["i4"])
-def test_arr_like(funcname, shape, cast_shape, dtype, cast_chunks, chunks, name, order):
-    np_func = getattr(np, funcname)
-    da_func = getattr(da, funcname)
-    shape = cast_shape(shape)
-    chunks = cast_chunks(chunks)
+def test_arr_like(
+    funcname, shape, cast_shape, dtype, cast_chunks, chunks, name, order, backend
+):
+    backend_lib = pytest.importorskip(backend)
+    with dask.config.set({"array.backend": backend}):
+        np_func = getattr(backend_lib, funcname)
+        da_func = getattr(da, funcname)
+        shape = cast_shape(shape)
+        chunks = cast_chunks(chunks)
 
-    if "full" in funcname:
-        old_np_func = np_func
-        old_da_func = da_func
+        if "full" in funcname:
+            old_np_func = np_func
+            old_da_func = da_func
 
-        np_func = lambda *a, **k: old_np_func(*a, fill_value=5, **k)
-        da_func = lambda *a, **k: old_da_func(*a, fill_value=5, **k)
+            np_func = lambda *a, **k: old_np_func(*a, fill_value=5, **k)
+            da_func = lambda *a, **k: old_da_func(*a, fill_value=5, **k)
 
-    dtype = np.dtype(dtype)
+        dtype = np.dtype(dtype)
 
-    if "like" in funcname:
-        a = np.random.randint(0, 10, shape).astype(dtype)
+        if "like" in funcname:
+            a = backend_lib.random.randint(0, 10, shape).astype(dtype)
 
-        np_r = np_func(a, order=order)
-        da_r = da_func(a, order=order, chunks=chunks, name=name)
-    else:
-        np_r = np_func(shape, order=order, dtype=dtype)
-        da_r = da_func(shape, order=order, dtype=dtype, chunks=chunks, name=name)
+            np_r = np_func(a, order=order)
+            da_r = da_func(a, order=order, chunks=chunks, name=name)
+        else:
+            np_r = np_func(shape, order=order, dtype=dtype)
+            da_r = da_func(shape, order=order, dtype=dtype, chunks=chunks, name=name)
 
-    assert np_r.shape == da_r.shape
-    assert np_r.dtype == da_r.dtype
+        assert np_r.shape == da_r.shape
+        assert np_r.dtype == da_r.dtype
 
-    if "empty" not in funcname:
-        assert (np_r == np.asarray(da_r)).all()
+        # Make sure we are using the desired backend
+        assert isinstance(da_r._meta, backend_lib.ndarray)
+        assert isinstance(da_r.compute(), backend_lib.ndarray)
 
-    if name is None:
-        assert funcname.split("_")[0] in da_r.name
-    else:
-        assert da_r.name == name
+        if "empty" not in funcname:
+            assert_eq(np_r, da_r)
 
-    if "order" == "F":
-        assert np.isfortran(da_r.compute())
-    else:
-        assert not np.isfortran(da_r.compute())
+        if name is None:
+            assert funcname.split("_")[0] in da_r.name
+        else:
+            assert da_r.name == name
+
+        if "order" == "F":
+            assert np.isfortran(da_r.compute())
+        else:
+            assert not np.isfortran(da_r.compute())
 
 
 @pytest.mark.parametrize(
@@ -141,6 +156,30 @@ def test_linspace(endpoint):
     x = da.array([0.2, 6.4, 3.0, 1.6])
     nparr = np.linspace(0, 2, 8, endpoint=endpoint)
     darr = da.linspace(da.argmin(x), da.argmax(x) + 1, 8, endpoint=endpoint)
+    assert_eq(darr, nparr)
+
+    nparr = np.linspace(0, 0, 0, endpoint=endpoint)
+    darr = da.linspace(0, 0, 0, endpoint=endpoint)
+    assert_eq(darr, nparr)
+
+    nparr = np.linspace(1, 1, 0, endpoint=endpoint)
+    darr = da.linspace(1, 1, 0, endpoint=endpoint)
+    assert_eq(darr, nparr)
+
+    nparr = np.linspace(1, 5, 0, endpoint=endpoint)
+    darr = da.linspace(1, 5, 0, endpoint=endpoint)
+    assert_eq(darr, nparr)
+
+    nparr = np.linspace(0, 0, 1, endpoint=endpoint)
+    darr = da.linspace(0, 0, 1, endpoint=endpoint)
+    assert_eq(darr, nparr)
+
+    nparr = np.linspace(1, 1, 1, endpoint=endpoint)
+    darr = da.linspace(1, 1, 1, endpoint=endpoint)
+    assert_eq(darr, nparr)
+
+    nparr = np.linspace(1, 5, 1, endpoint=endpoint)
+    darr = da.linspace(1, 5, 1, endpoint=endpoint)
     assert_eq(darr, nparr)
 
 
@@ -266,7 +305,7 @@ def test_indices_dimensions_chunks():
         assert expected == actual
 
 
-def test_empty_indicies():
+def test_empty_indices():
     darr = da.indices(tuple(), chunks=tuple())
     nparr = np.indices(tuple())
     assert darr.shape == nparr.shape
@@ -292,7 +331,7 @@ def test_empty_indicies():
     assert_eq(darr, nparr)
 
 
-def test_indicies():
+def test_indices():
     darr = da.indices((1,), chunks=(1,))
     nparr = np.indices((1,))
     assert_eq(darr, nparr)
@@ -342,7 +381,7 @@ def test_meshgrid(shapes, chunks, indexing, sparse):
     r_a = np.meshgrid(*xi_a, indexing=indexing, sparse=sparse)
     r_d = da.meshgrid(*xi_d, indexing=indexing, sparse=sparse)
 
-    assert isinstance(r_d, list)
+    assert type(r_d) is type(r_a)
     assert len(r_a) == len(r_d)
 
     for e_r_a, e_r_d, i in zip(r_a, r_d, do):
@@ -408,32 +447,70 @@ def test_eye():
         assert 4 < x.npartitions < 32
 
 
-def test_diag():
-    v = np.arange(11)
-    assert_eq(da.diag(v), np.diag(v))
+@pytest.mark.parametrize("k", [0, 3, -3, 8])
+def test_diag_bad_input(k):
+    # when input numpy array is neither 1d nor 2d:
+    v = np.arange(2 * 3 * 4).reshape((2, 3, 4))
+    with pytest.raises(ValueError, match="Array must be 1d or 2d only"):
+        da.diag(v, k)
 
+    # when input dask array is neither 1d nor 2d:
+    v = da.arange(2 * 3 * 4).reshape((2, 3, 4))
+    with pytest.raises(ValueError, match="Array must be 1d or 2d only"):
+        da.diag(v, k)
+
+    # when input is not an array:
+    v = 1
+    with pytest.raises(TypeError, match="v must be a dask array or numpy array"):
+        da.diag(v, k)
+
+
+@pytest.mark.parametrize("k", [0, 3, -3, 8])
+def test_diag_2d_array_creation(k):
+    # when input 1d-array is a numpy array:
+    v = np.arange(11)
+    assert_eq(da.diag(v, k), np.diag(v, k))
+
+    # when input 1d-array is a dask array:
     v = da.arange(11, chunks=3)
-    darr = da.diag(v)
-    nparr = np.diag(v)
+    darr = da.diag(v, k)
+    nparr = np.diag(v, k)
     assert_eq(darr, nparr)
-    assert sorted(da.diag(v).dask) == sorted(da.diag(v).dask)
+    assert sorted(da.diag(v, k).dask) == sorted(da.diag(v, k).dask)
 
     v = v + v + 3
-    darr = da.diag(v)
-    nparr = np.diag(v)
+    darr = da.diag(v, k)
+    nparr = np.diag(v, k)
     assert_eq(darr, nparr)
 
     v = da.arange(11, chunks=11)
-    darr = da.diag(v)
-    nparr = np.diag(v)
+    darr = da.diag(v, k)
+    nparr = np.diag(v, k)
     assert_eq(darr, nparr)
-    assert sorted(da.diag(v).dask) == sorted(da.diag(v).dask)
+    assert sorted(da.diag(v, k).dask) == sorted(da.diag(v, k).dask)
 
+
+@pytest.mark.parametrize("k", [0, 3, -3, 8])
+def test_diag_extraction(k):
+    # when input 2d-array is a square numpy array:
     x = np.arange(64).reshape((8, 8))
-    assert_eq(da.diag(x), np.diag(x))
-
+    assert_eq(da.diag(x, k), np.diag(x, k))
+    # when input 2d-array is a square dask array:
     d = da.from_array(x, chunks=(4, 4))
-    assert_eq(da.diag(d), np.diag(x))
+    assert_eq(da.diag(d, k), np.diag(x, k))
+    # heterogeneous chunks:
+    d = da.from_array(x, chunks=((3, 2, 3), (4, 1, 2, 1)))
+    assert_eq(da.diag(d, k), np.diag(x, k))
+
+    # when input 2d-array is a rectangular numpy array:
+    y = np.arange(5 * 8).reshape((5, 8))
+    assert_eq(da.diag(y, k), np.diag(y, k))
+    # when input 2d-array is a rectangular dask array:
+    d = da.from_array(y, chunks=(4, 4))
+    assert_eq(da.diag(d, k), np.diag(y, k))
+    # heterogeneous chunks:
+    d = da.from_array(y, chunks=((3, 2), (4, 1, 2, 1)))
+    assert_eq(da.diag(d, k), np.diag(y, k))
 
 
 def test_diagonal():
@@ -445,10 +522,10 @@ def test_diagonal():
     with pytest.raises(ValueError):
         da.diagonal(v, axis1=0, axis2=0)
 
-    with pytest.raises(np.AxisError):
+    with pytest.raises(AxisError):
         da.diagonal(v, axis1=-4)
 
-    with pytest.raises(np.AxisError):
+    with pytest.raises(AxisError):
         da.diagonal(v, axis2=-4)
 
     v = np.arange(4 * 5 * 6).reshape((4, 5, 6))
@@ -680,6 +757,7 @@ def test_pad_0_width(shape, chunks, pad_width, mode, kwargs):
     [
         ((10,), (3,), 1, "constant", {}),
         ((10,), (3,), 2, "constant", {"constant_values": -1}),
+        ((10,), (3,), 2, "constant", {"constant_values": np.array(-1)}),
         ((10,), (3,), ((2, 3)), "constant", {"constant_values": (-1, -2)}),
         (
             (10, 11),
@@ -719,6 +797,49 @@ def test_pad(shape, chunks, pad_width, mode, kwargs):
         assert_eq(np_r[pad_width:-pad_width], da_r[pad_width:-pad_width])
     else:
         assert_eq(np_r, da_r)
+
+
+@pytest.mark.parametrize(
+    ["np_a", "pad_value"],
+    (
+        (np.arange(4, dtype="int64"), np.int64(1)),
+        (np.arange(4, dtype="float64"), np.float64(0)),
+        (
+            np.array(
+                ["2000-01-01", "2000-01-02", "2000-01-03", "2000-01-04"],
+                dtype="datetime64[ns]",
+            ),
+            np.datetime64("1972-01-01"),
+        ),
+        (np.array([True, False, True, True], dtype=np.bool_), np.bool_(False)),
+        (np.array(["ab", "bc", "de", "ef"], dtype=np.str_), np.str_("00")),
+        (np.arange(4, dtype="int64"), np.array(1, dtype="int64")),
+        (np.arange(4, dtype="float64"), np.array(0, dtype="float64")),
+        (
+            np.array(
+                ["2000-01-01", "2000-01-02", "2000-01-03", "2000-01-04"],
+                dtype="datetime64[ns]",
+            ),
+            np.array("1972-01-01", dtype="datetime64[ns]"),
+        ),
+        (
+            np.array([True, False, True, True], dtype=np.bool_),
+            np.array(False, dtype=np.bool_),
+        ),
+        (
+            np.array(["ab", "bc", "de", "ef"], dtype=np.str_),
+            np.array("00", dtype=np.str_),
+        ),
+    ),
+)
+def test_pad_constant_values(np_a, pad_value):
+    pad_width = (1, 1)
+    da_a = da.from_array(np_a, chunks=(2,))
+
+    np_r = np.pad(np_a, pad_width, mode="constant", constant_values=pad_value)
+    da_r = da.pad(da_a, pad_width, mode="constant", constant_values=pad_value)
+
+    assert_eq(np_r, da_r)
 
 
 @pytest.mark.parametrize("dtype", [np.uint8, np.int16, np.float32, bool])
@@ -800,3 +921,66 @@ def test_auto_chunks():
     with dask.config.set({"array.chunk-size": "50 MiB"}):
         x = da.ones((10000, 10000))
         assert 4 < x.npartitions < 32
+
+
+def test_string_auto_chunk():
+    with pytest.raises(ValueError):
+        da.full((10000, 10000), "auto_chunk", chunks="auto")
+
+
+def test_diagonal_zero_chunks():
+    x = da.ones((8, 8), chunks=(4, 4))
+    dd = da.ones((8, 8), chunks=(4, 4))
+    d = da.diagonal(dd)
+
+    expected = np.ones((8,))
+    assert_eq(d, expected)
+    assert_eq(d + d, 2 * expected)
+    A = d + x
+    assert_eq(A, np.full((8, 8), 2.0))
+
+
+@pytest.mark.parametrize("fn", ["zeros_like", "ones_like"])
+@pytest.mark.parametrize("shape_chunks", [((50, 4), (10, 2)), ((50,), (10,))])
+@pytest.mark.parametrize("dtype", ["u4", np.float32, None, np.int64])
+def test_nan_zeros_ones_like(fn, shape_chunks, dtype):
+    dafn = getattr(da, fn)
+    npfn = getattr(np, fn)
+    shape, chunks = shape_chunks
+    x1 = da.random.standard_normal(size=shape, chunks=chunks)
+    y1 = x1[x1 < 0.5]
+    x2 = x1.compute()
+    y2 = x2[x2 < 0.5]
+    assert_eq(
+        dafn(y1, dtype=dtype),
+        npfn(y2, dtype=dtype),
+    )
+
+
+@pytest.mark.parametrize("shape_chunks", [((50, 4), (10, 2)), ((50,), (10,))])
+@pytest.mark.parametrize("dtype", ["u4", np.float32, None, np.int64])
+def test_nan_empty_like(shape_chunks, dtype):
+    shape, chunks = shape_chunks
+    x1 = da.random.standard_normal(size=shape, chunks=chunks)
+    y1 = x1[x1 < 0.5]
+    x2 = x1.compute()
+    y2 = x2[x2 < 0.5]
+    a_da = da.empty_like(y1, dtype=dtype).compute()
+    a_np = np.empty_like(y2, dtype=dtype)
+    assert a_da.shape == a_np.shape
+    assert a_da.dtype == a_np.dtype
+
+
+@pytest.mark.parametrize("val", [0, 0.0, 99, -1])
+@pytest.mark.parametrize("shape_chunks", [((50, 4), (10, 2)), ((50,), (10,))])
+@pytest.mark.parametrize("dtype", ["u4", np.float32, None, np.int64])
+def test_nan_full_like(val, shape_chunks, dtype):
+    shape, chunks = shape_chunks
+    x1 = da.random.standard_normal(size=shape, chunks=chunks)
+    y1 = x1[x1 < 0.5]
+    x2 = x1.compute()
+    y2 = x2[x2 < 0.5]
+    assert_eq(
+        da.full_like(y1, val, dtype=dtype),
+        np.full_like(y2, val, dtype=dtype),
+    )

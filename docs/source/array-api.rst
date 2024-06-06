@@ -9,6 +9,8 @@ Top level functions
 .. autosummary::
    :toctree: generated/
 
+   abs
+   absolute
    add
    all
    allclose
@@ -64,9 +66,11 @@ Top level functions
    cumsum
    deg2rad
    degrees
+   delete
    diag
    diagonal
    diff
+   divide
    divmod
    digitize
    dot
@@ -78,7 +82,9 @@ Top level functions
    equal
    exp
    exp2
+   expand_dims
    expm1
+   extract
    eye
    fabs
    fix
@@ -105,6 +111,7 @@ Top level functions
    histogramdd
    hstack
    hypot
+   i0
    imag
    indices
    insert
@@ -120,7 +127,9 @@ Top level functions
    isposinf
    isreal
    ldexp
+   left_shift
    less
+   less_equal
    linspace
    log
    log10
@@ -172,12 +181,14 @@ Top level functions
    percentile
    ~core.PerformanceWarning
    piecewise
+   positive
    power
    prod
    ptp
    rad2deg
    radians
    ravel
+   ravel_multi_index
    real
    reciprocal
    rechunk
@@ -187,17 +198,21 @@ Top level functions
    repeat
    reshape
    result_type
+   right_shift
    rint
    roll
    rollaxis
    rot90
    round
    searchsorted
+   select
+   shape
    sign
    signbit
    sin
    sinc
    sinh
+   spacing
    sqrt
    square
    squeeze
@@ -205,6 +220,7 @@ Top level functions
    std
    subtract
    sum
+   swapaxes
    take
    tan
    tanh
@@ -213,10 +229,16 @@ Top level functions
    topk
    trace
    transpose
-   true_divide
+   tri
    tril
+   tril_indices
+   tril_indices_from
    triu
+   triu_indices
+   triu_indices_from
+   true_divide
    trunc
+   union1d
    unique
    unravel_index
    var
@@ -284,6 +306,7 @@ Array
    Array.store
    Array.sum
    Array.swapaxes
+   Array.to_backend
    Array.to_dask_dataframe
    Array.to_delayed
    Array.to_hdf5
@@ -351,6 +374,7 @@ Masked Arrays
    :toctree: generated/
 
    ma.average
+   ma.empty_like
    ma.filled
    ma.fix_invalid
    ma.getdata
@@ -367,7 +391,11 @@ Masked Arrays
    ma.masked_outside
    ma.masked_values
    ma.masked_where
+   ma.nonzero
+   ma.ones_like
    ma.set_fill_value
+   ma.where
+   ma.zeros_like
 
 Random
 ~~~~~~
@@ -379,6 +407,7 @@ Random
    random.binomial
    random.chisquare
    random.choice
+   random.default_rng
    random.exponential
    random.f
    random.gamma
@@ -389,6 +418,7 @@ Random
    random.logistic
    random.lognormal
    random.logseries
+   random.multinomial
    random.negative_binomial
    random.noncentral_chisquare
    random.noncentral_f
@@ -399,6 +429,7 @@ Random
    random.power
    random.randint
    random.random
+   random.random_integers
    random.random_sample
    random.rayleigh
    random.standard_cauchy
@@ -494,3 +525,14 @@ Internal functions
    blockwise
    normalize_chunks
    unify_chunks
+
+
+Dask Metadata
+~~~~~~~~~~~~~
+
+.. currentmodule:: dask.array.utils
+
+.. autosummary::
+   :toctree: generated/
+
+   meta_from_array

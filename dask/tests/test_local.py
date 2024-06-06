@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import pytest
 
 import dask
@@ -167,10 +169,11 @@ def test_ordering():
 
     get_sync(dsk, "y")
 
-    assert L == sorted(L)
+    assert L == sorted(L, reverse=True)
 
 
 def test_complex_ordering():
+    pytest.importorskip("numpy")
     da = pytest.importorskip("dask.array")
     from dask.diagnostics import Callback
 

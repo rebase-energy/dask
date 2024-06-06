@@ -6,62 +6,69 @@ channels:
 dependencies:
   # required dependencies
   - python=3.9
-  - setuptools<60.0
   - packaging
-  - numpy
-  - pandas
+  - pyyaml
+  - click
+  - cloudpickle
+  - partd
+  - fsspec
+  - importlib_metadata
+  - toolz
   # test dependencies
   - pre-commit
   - pytest
   - pytest-cov
   - pytest-rerunfailures
+  - pytest-timeout
   - pytest-xdist
-  - moto
+  - moto<5
+  # Optional dependencies
+  - mimesis<12
+  - numpy=1.22
+  - pandas=1.4
+  - numba<0.59.0  # Removed numba.generated_jit which pandas<2.1 uses
   - flask
   - fastparquet
   - h5py
   - pytables
   - zarr
-  - tiledb-py
-  # resolver was pulling in old versions, so hard-coding floor
-  # https://github.com/dask/dask/pull/8505
-  - tiledb>=2.5.0
+  # `tiledb-py=0.17.5` lead to strange seg faults in CI.
+  # We should unpin when possible.
+  # https://github.com/dask/dask/pull/9569
+  - tiledb-py<0.17.4
+  - pyspark
+  - tiledb
   - xarray
-  - fsspec
-  - sqlalchemy>=1.4.0
-  - pyarrow
-  - coverage<6.3 # https://github.com/nedbat/coveragepy/issues/1310
+  - sqlalchemy<2  # `pandas=1.4` doesn't support `sqlalchemy=2`
+  - pyarrow=9
+  - coverage
   - jsonschema
   # other -- IO
-  # Not available for Python 3.9 on conda-forge
-  # - bcolz
-  - blosc
   - boto3
   - botocore
   - bokeh
   - httpretty
   - aiohttp
-  # Need recent version of s3fs to support newer aiobotocore versions
-  # https://github.com/dask/s3fs/issues/514
-  - s3fs>=2021.8.0
-  - cloudpickle
+  - s3fs>=2021.9.0
   - crick
   - cytoolz
   - distributed
   - ipython
+  - ipycytoscape
+  # until https://github.com/jupyter-widgets/ipywidgets/issues/3731 is fixed
+  - ipywidgets<8.0.5
+  - ipykernel<6.22.0
   - lz4
-  - numba
-  - partd
   - psutil
   - requests
-  - scikit-image
+  - scikit-image<0.20
   - scikit-learn
-  - scipy<1.8.0 # See https://github.com/dask/dask/issues/8682
-  - toolz
+  - scipy
   - python-snappy
   - sparse
   - cachey
   - python-graphviz
+  - python-cityhash
   - python-xxhash
   - mmh3
   - jinja2

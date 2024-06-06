@@ -52,8 +52,8 @@ non-exhaustive list follows:
 
 Git and GitHub can be challenging at first.  Fortunately good materials exist
 on the internet.  Rather than repeat these materials here, we refer you to
-Pandas' documentation and links on this subject at
-https://pandas.pydata.org/pandas-docs/stable/contributing.html
+pandas' documentation and links on this subject at
+https://pandas.pydata.org/docs/dev/development/contributing.html
 
 
 Issues
@@ -65,7 +65,7 @@ you should raise it there to start public discussion.
 
 If you are looking for an introductory issue to get started with development,
 then check out the `"good first issue" label`_, which contains issues that are good
-for starting developers.  Generally, familiarity with Python, NumPy, Pandas, and
+for starting developers.  Generally, familiarity with Python, NumPy, pandas, and
 some parallel computing are assumed.
 
 .. _`"good first issue" label`: https://github.com/dask/dask/labels/good%20first%20issue
@@ -91,6 +91,7 @@ can successfully install Dask)::
 
 Contributions to Dask can then be made by submitting pull requests on GitHub.
 
+.. _develop-install:
 
 Install
 ~~~~~~~
@@ -107,7 +108,7 @@ pip or conda_
 
 ``conda``::
 
-  conda env create -n dask-dev -f continuous_integration/environment-3.9.yaml
+  conda env create -n dask-dev -f continuous_integration/environment-3.12.yaml
   conda activate dask-dev
   python -m pip install --no-deps -e .
 
@@ -132,8 +133,10 @@ language support, testing, documentation, and style.
 Python Versions
 ~~~~~~~~~~~~~~~
 
-Dask supports Python versions 3.7, 3.8, and 3.9.
+Dask supports Python versions 3.9 to 3.12.
 Name changes are handled by the :file:`dask/compatibility.py` file.
+
+.. _develop-test:
 
 Test
 ~~~~
@@ -173,8 +176,8 @@ If you want the tests to run faster, you can run them in parallel using
 
    py.test dask -n auto
 
-Tests run automatically on the Travis.ci and Appveyor continuous testing
-frameworks on every push to every pull request on GitHub.
+Tests run automatically on GitHub Actions on every push to every pull
+request on GitHub.
 
 Tests are organized within the various modules' subdirectories::
 
@@ -185,7 +188,7 @@ Tests are organized within the various modules' subdirectories::
     dask/diagnostics/tests/test_*.py
 
 For the Dask collections like Dask Array and Dask DataFrame, behavior is
-typically tested directly against the NumPy or Pandas libraries using the
+typically tested directly against the NumPy or pandas libraries using the
 ``assert_eq`` functions:
 
 .. code-block:: python
@@ -195,7 +198,8 @@ typically tested directly against the NumPy or Pandas libraries using the
    from dask.array.utils import assert_eq
 
    def test_aggregations():
-       nx = np.random.random(100)
+       rng = np.random.default_rng()
+       nx = rng.random(100)
        dx = da.from_array(nx, chunks=(10,))
 
        assert_eq(nx.sum(), dx.sum())
@@ -250,7 +254,7 @@ after the line.
 
 .. _numpydoc: https://numpydoc.readthedocs.io/en/latest/format.html#docstring-standard
 
-Docstrings are tested under Python 3.8 on GitHub Actions. You can test
+Docstrings are tested under Python 3.11 on GitHub Actions. You can test
 docstrings with pytest as follows::
 
    py.test dask --doctest-modules
@@ -263,10 +267,10 @@ Docstring testing requires ``graphviz`` to be installed. This can be done via::
 Code Formatting
 ~~~~~~~~~~~~~~~
 
-Dask uses several code linters (flake8, black, isort, pyupgrade), which are enforced by
-CI. Developers should run them locally before they submit a PR, through the single
-command ``pre-commit run --all-files``. This makes sure that linter versions and options
-are aligned for all developers.
+Dask uses several code linters (flake8, black, isort, pyupgrade, mypy), which are
+enforced by CI. Developers should run them locally before they submit a PR, through the
+single command ``pre-commit run --all-files``. This makes sure that linter versions and
+options are aligned for all developers.
 
 Optionally, you may wish to setup the `pre-commit hooks <https://pre-commit.com/>`_ to
 run automatically when you make a git commit. This can be done by running::
@@ -329,14 +333,14 @@ Github Actions
 
 Dask uses Github Actions for Continuous Integration (CI) testing for each PR.
 These CI builds will run the test suite across a variety of Python versions, operating
-systems, and package dependency versions.  Addtionally, if a commit message
+systems, and package dependency versions.  Additionally, if a commit message
 includes the phrase ``test-upstream``, then an additional CI build will be
 triggered which uses the development versions of several dependencies
 including: NumPy, pandas, fsspec, etc.
 
 The CI workflows for Github Actions are defined in
 `.github/workflows <https://github.com/dask/dask/tree/main/.github/workflows>`_
-with additonal scripts and metadata located in `continuous_integration
+with additional scripts and metadata located in `continuous_integration
 <https://github.com/dask/dask/tree/main/continuous_integration>`_
 
 
@@ -352,7 +356,7 @@ docker image.  When making commits to the
 The docker image building process can be monitored
 `here <https://gpuci.gpuopenanalytics.com/job/dask/job/dask-build-environment/job/branch/job/dask-build-env-main/>`_.
 Note, the ``dask-build-environment`` has two separate Dockerfiles for Dask
-and Distributed similiarlly, gpuCI will run for both `Dask
+and Distributed similarly, gpuCI will run for both `Dask
 <https://gpuci.gpuopenanalytics.com/job/dask/job/dask/job/prb/job/dask-prb/>`_
 and `Distributed
 <https://gpuci.gpuopenanalytics.com/job/dask/job/distributed/job/prb/job/distributed-prb/>`_
@@ -372,9 +376,6 @@ Dask Maintainers can then approve gpuCI builds for these PRs with following choi
 
 - To only approve the PR contributor for the current PR, leave a comment which states ``ok to test``
 - To approve the current PR and all future PRs from the contributor, leave a comment which states ``add to allowlist``
-
-For more information about gpuCI please consult the `docs page
-<https://docs.rapids.ai/gpuci>`_
 
 
 .. _Sphinx: https://www.sphinx-doc.org/

@@ -1,17 +1,15 @@
+from __future__ import annotations
+
 import os
 from collections.abc import Mapping
 from io import BytesIO
 from warnings import catch_warnings, simplefilter, warn
 
-from ...highlevelgraph import HighLevelGraph
-from ...layers import DataFrameIOLayer
-
 try:
     import psutil
 except ImportError:
-    psutil = None
+    psutil = None  # type: ignore
 
-import fsspec.implementations.local
 import numpy as np
 import pandas as pd
 from fsspec.compression import compr
@@ -27,16 +25,18 @@ from pandas.api.types import (
     is_object_dtype,
 )
 
-from ...base import tokenize
-from ...bytes import read_bytes
-from ...core import flatten
-from ...delayed import delayed
-from ...utils import asciitable, parse_bytes
-from ..core import new_dd_object
-from ..utils import clear_known_categories
+from dask.base import tokenize
+from dask.bytes import read_bytes
+from dask.core import flatten
+from dask.dataframe.backends import dataframe_creation_dispatch
+from dask.dataframe.io.io import from_map
+from dask.dataframe.io.utils import DataFrameIOFunction
+from dask.dataframe.utils import clear_known_categories
+from dask.delayed import delayed
+from dask.utils import asciitable, parse_bytes
 
 
-class CSVFunctionWrapper:
+class CSVFunctionWrapper(DataFrameIOFunction):
     """
     CSV Function-Wrapper Class
     Reads CSV data from disk to produce a partition (given a key).
@@ -55,7 +55,7 @@ class CSVFunctionWrapper:
         kwargs,
     ):
         self.full_columns = full_columns
-        self.columns = columns
+        self._columns = columns
         self.colname = colname
         self.head = head
         self.header = header
@@ -63,6 +63,14 @@ class CSVFunctionWrapper:
         self.dtypes = dtypes
         self.enforce = enforce
         self.kwargs = kwargs
+
+    @property
+    def columns(self):
+        if self._columns is None:
+            return self.full_columns
+        if self.colname:
+            return self._columns + [self.colname]
+        return self._columns
 
     def project_columns(self, columns):
         """Return a new CSVFunctionWrapper object with
@@ -72,11 +80,17 @@ class CSVFunctionWrapper:
         columns = [c for c in self.head.columns if c in columns]
         if columns == self.columns:
             return self
+        if self.colname and self.colname not in columns:
+            # when path-as-column is on, we must keep it at IO
+            # whatever the selection
+            head = self.head[columns + [self.colname]]
+        else:
+            head = self.head[columns]
         return CSVFunctionWrapper(
             self.full_columns,
             columns,
             self.colname,
-            self.head[columns],
+            head,
             self.header,
             self.reader,
             {c: self.dtypes[c] for c in columns},
@@ -85,7 +99,6 @@ class CSVFunctionWrapper:
         )
 
     def __call__(self, part):
-
         # Part will be a 3-element tuple
         block, path, is_first, is_last = part
 
@@ -104,7 +117,8 @@ class CSVFunctionWrapper:
         write_header = False
         rest_kwargs = self.kwargs.copy()
         if not is_first:
-            write_header = True
+            if rest_kwargs.get("names", None) is None:
+                write_header = True
             rest_kwargs.pop("skiprows", None)
             if rest_kwargs.get("header", 0) is not None:
                 rest_kwargs.pop("header", None)
@@ -114,14 +128,14 @@ class CSVFunctionWrapper:
         # Deal with column projection
         columns = self.full_columns
         project_after_read = False
-        if self.columns is not None:
+        if self._columns is not None:
             if self.kwargs:
                 # To be safe, if any kwargs are defined, avoid
                 # changing `usecols` here. Instead, we can just
                 # select columns after the read
                 project_after_read = True
             else:
-                columns = self.columns
+                columns = self._columns
                 rest_kwargs["usecols"] = columns
 
         # Call `pandas_read_text`
@@ -375,13 +389,8 @@ def text_blocks_to_pandas(
     for i in range(len(blocks)):
         parts.append([blocks[i], paths[i] if paths else None, is_first[i], is_last[i]])
 
-    # Create Blockwise layer
-    label = "read-csv-"
-    name = label + tokenize(reader, urlpath, columns, enforce, head, blocksize)
-    layer = DataFrameIOLayer(
-        name,
-        columns,
-        parts,
+    # Construct the output collection with from_map
+    return from_map(
         CSVFunctionWrapper(
             columns,
             None,
@@ -393,11 +402,13 @@ def text_blocks_to_pandas(
             enforce,
             kwargs,
         ),
-        label=label,
+        parts,
+        meta=head,
+        label="read-csv",
+        token=tokenize(reader, urlpath, columns, enforce, head, blocksize),
+        enforce_metadata=False,
         produces_tasks=True,
     )
-    graph = HighLevelGraph({name: layer}, {name: set()})
-    return new_dd_object(graph, name, head, (None,) * (len(blocks) + 1))
 
 
 def block_mask(block_lists):
@@ -473,12 +484,23 @@ def read_pandas(
         kwargs["lineterminator"] = lineterminator
     else:
         lineterminator = "\n"
+    if "encoding" in kwargs:
+        b_lineterminator = lineterminator.encode(kwargs["encoding"])
+        empty_blob = "".encode(kwargs["encoding"])
+        if empty_blob:
+            # This encoding starts with a Byte Order Mark (BOM), so strip that from the
+            # start of the line terminator, since this value is not a full file.
+            b_lineterminator = b_lineterminator[len(empty_blob) :]
+    else:
+        b_lineterminator = lineterminator.encode()
     if include_path_column and isinstance(include_path_column, bool):
         include_path_column = "path"
-    if "index" in kwargs or "index_col" in kwargs:
+    if "index" in kwargs or (
+        "index_col" in kwargs and kwargs.get("index_col") is not False
+    ):
         raise ValueError(
-            "Keywords 'index' and 'index_col' not supported. "
-            f"Use dd.{reader_name}(...).set_index('my-index') instead"
+            "Keywords 'index' and 'index_col' not supported, except for "
+            "'index_col=False'. Use dd.{reader_name}(...).set_index('my-index') instead"
         )
     for kw in ["iterator", "chunksize"]:
         if kw in kwargs:
@@ -491,9 +513,9 @@ def read_pandas(
             "head(n=nrows)`".format(reader_name)
         )
     if isinstance(kwargs.get("skiprows"), int):
-        skiprows = lastskiprow = firstrow = kwargs.get("skiprows")
+        lastskiprow = firstrow = kwargs.get("skiprows")
     elif kwargs.get("skiprows") is None:
-        skiprows = lastskiprow = firstrow = 0
+        lastskiprow = firstrow = 0
     else:
         # When skiprows is a list, we expect more than max(skiprows) to
         # be included in the sample. This means that [0,2] will work well,
@@ -510,12 +532,16 @@ def read_pandas(
         path_converter = None
 
     # If compression is "infer", inspect the (first) path suffix and
-    # set the proper compression option if the suffix is recongnized.
+    # set the proper compression option if the suffix is recognized.
     if compression == "infer":
         # Translate the input urlpath to a simple path list
         paths = get_fs_token_paths(urlpath, mode="rb", storage_options=storage_options)[
             2
         ]
+
+        # Check for at least one valid path
+        if len(paths) == 0:
+            raise OSError(f"{urlpath} resolved to no files")
 
         # Infer compression from first path
         compression = infer_compression(paths[0])
@@ -542,7 +568,6 @@ def read_pandas(
             "Setting ``sample=blocksize``"
         )
         sample = blocksize
-    b_lineterminator = lineterminator.encode()
     b_out = read_bytes(
         urlpath,
         delimiter=b_lineterminator,
@@ -573,7 +598,8 @@ def read_pandas(
     names = kwargs.get("names", None)
     header = kwargs.get("header", "infer" if names is None else None)
     need = 1 if header is None else 2
-
+    if isinstance(header, int):
+        firstrow += header
     if kwargs.get("comment"):
         # if comment is provided, step through lines of b_sample and strip out comments
         parts = []
@@ -588,7 +614,9 @@ def read_pandas(
             if len(parts) > need:
                 break
     else:
-        parts = b_sample.split(b_lineterminator, lastskiprow + need)
+        parts = b_sample.split(
+            b_lineterminator, max(lastskiprow + need, firstrow + need)
+        )
 
     # If the last partition is empty, don't count it
     nparts = 0 if not parts else len(parts) - int(not parts[-1])
@@ -600,13 +628,14 @@ def read_pandas(
             "in `sample` in the call to `read_csv`/`read_table`"
         )
 
-    if isinstance(header, int):
-        firstrow += header
     header = b"" if header is None else parts[firstrow] + b_lineterminator
 
     # Use sample to infer dtypes and check for presence of include_path_column
     head_kwargs = kwargs.copy()
     head_kwargs.pop("skipfooter", None)
+    if head_kwargs.get("engine") == "pyarrow":
+        # Use c engine to infer since Arrow engine does not support nrows
+        head_kwargs["engine"] = "c"
     try:
         head = reader(BytesIO(b_sample), nrows=sample_rows, **head_kwargs)
     except pd.errors.ParserError as e:
@@ -759,7 +788,12 @@ def make_reader(reader, reader_name, file_type):
     return read
 
 
-read_csv = make_reader(pd.read_csv, "read_csv", "CSV")
+read_csv = dataframe_creation_dispatch.register_inplace(
+    backend="pandas",
+    name="read_csv",
+)(make_reader(pd.read_csv, "read_csv", "CSV"))
+
+
 read_table = make_reader(pd.read_table, "read_table", "delimited")
 read_fwf = make_reader(pd.read_fwf, "read_fwf", "fixed-width")
 
@@ -829,59 +863,74 @@ def to_csv(
     >>> paths = ['/path/to/data/alice.csv', '/path/to/data/bob.csv', ...]  # doctest: +SKIP
     >>> df.to_csv(paths) # doctest: +SKIP
 
+    You can also provide a directory name:
+
+    >>> df.to_csv('/path/to/data') # doctest: +SKIP
+
+    The files will be numbered 0, 1, 2, (and so on) suffixed with '.part':
+
+    ::
+
+        /path/to/data/0.part
+        /path/to/data/1.part
+
     Parameters
     ----------
     df : dask.DataFrame
         Data to save
-    filename : string
-        Path glob indicating the naming scheme for the output files
+    filename : string or list
+        Absolute or relative filepath(s). Prefix with a protocol like ``s3://``
+        to save to remote filesystems.
     single_file : bool, default False
         Whether to save everything into a single CSV file. Under the
         single file mode, each partition is appended at the end of the
-        specified CSV file. Note that not all filesystems support the
-        append mode and thus the single file mode, especially on cloud
-        storage systems such as S3 or GCS. A warning will be issued when
-        writing to a file that is not backed by a local filesystem.
-    encoding : string, optional
-        A string representing the encoding to use in the output file,
-        defaults to 'ascii' on Python 2 and 'utf-8' on Python 3.
-    mode : str
-        Python write mode, default 'w'
+        specified CSV file.
+    encoding : string, default 'utf-8'
+        A string representing the encoding to use in the output file.
+    mode : str, default 'w'
+        Python file mode. The default is 'w' (or 'wt'), for writing
+        a new file or overwriting an existing file in text mode. 'a'
+        (or 'at') will append to an existing file in text mode or
+        create a new file if it does not already exist. See :py:func:`open`.
     name_function : callable, default None
         Function accepting an integer (partition index) and producing a
         string to replace the asterisk in the given filename globstring.
         Should preserve the lexicographic order of partitions. Not
-        supported when `single_file` is `True`.
+        supported when ``single_file`` is True.
     compression : string, optional
-        a string representing the compression to use in the output file,
+        A string representing the compression to use in the output file,
         allowed values are 'gzip', 'bz2', 'xz',
-        only used when the first argument is a filename
-    compute : bool
-        If true, immediately executes. If False, returns a set of delayed
+        only used when the first argument is a filename.
+    compute : bool, default True
+        If True, immediately executes. If False, returns a set of delayed
         objects, which can be computed at a later time.
     storage_options : dict
         Parameters passed on to the backend filesystem class.
-    header_first_partition_only : boolean, default None
-        If set to `True`, only write the header row in the first output
+    header_first_partition_only : bool, default None
+        If set to True, only write the header row in the first output
         file. By default, headers are written to all partitions under
-        the multiple file mode (`single_file` is `False`) and written
-        only once under the single file mode (`single_file` is `True`).
-        It must not be `False` under the single file mode.
+        the multiple file mode (``single_file`` is False) and written
+        only once under the single file mode (``single_file`` is True).
+        It must be True under the single file mode.
     compute_kwargs : dict, optional
         Options to be passed in to the compute method
     kwargs : dict, optional
-        Additional parameters to pass to `pd.DataFrame.to_csv()`
+        Additional parameters to pass to :meth:`pandas.DataFrame.to_csv`.
 
     Returns
     -------
-    The names of the file written if they were computed right away
-    If not, the delayed tasks associated to the writing of the files
+    The names of the file written if they were computed right away.
+    If not, the delayed tasks associated with writing the files.
 
     Raises
     ------
     ValueError
-        If `header_first_partition_only` is set to `False` or
-        `name_function` is specified when `single_file` is `True`.
+        If ``header_first_partition_only`` is set to False or
+        ``name_function`` is specified when ``single_file`` is True.
+
+    See Also
+    --------
+    fsspec.open_files
     """
     if single_file and name_function is not None:
         raise ValueError("name_function is not supported under the single file mode")
@@ -901,10 +950,9 @@ def to_csv(
     dfs = df.to_delayed()
     if single_file:
         first_file = open_file(filename, mode=mode, **file_options)
-        if not isinstance(first_file.fs, fsspec.implementations.local.LocalFileSystem):
-            warn("Appending data to a network storage system may not work.")
         value = to_csv_chunk(dfs[0], first_file, **kwargs)
-        append_mode = mode.replace("w", "") + "a"
+        append_mode = mode if "a" in mode else mode + "a"
+        append_mode = append_mode.replace("w", "").replace("x", "")
         append_file = open_file(filename, mode=append_mode, **file_options)
         kwargs["header"] = False
         for d in dfs[1:]:
@@ -959,6 +1007,6 @@ def to_csv(
         return values
 
 
-from ..core import _Frame
+from dask.dataframe.core import _Frame
 
 _Frame.to_csv.__doc__ = to_csv.__doc__

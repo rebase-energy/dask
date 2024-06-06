@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+import warnings
+
 import pytest
 
 pd = pytest.importorskip("pandas")
@@ -6,7 +10,6 @@ import numpy as np
 
 import dask.array as da
 import dask.dataframe as dd
-from dask.dataframe._compat import PANDAS_GT_120
 from dask.dataframe.utils import assert_eq
 
 _BASE_UFUNCS = [
@@ -91,7 +94,8 @@ def test_ufunc(pandas_input, ufunc):
     dask_type = dask_input.__class__
 
     # applying Dask ufunc doesn't trigger computation
-    with pytest.warns(None):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
         # Some cause warnings (arcsine)
         assert isinstance(dafunc(dask_input), dask_type)
         assert_eq(dafunc(dask_input), npfunc(pandas_input))
@@ -113,7 +117,8 @@ def test_ufunc(pandas_input, ufunc):
     if ufunc in ("logical_not", "signbit", "isnan", "isinf", "isfinite"):
         return
 
-    with pytest.warns(None):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
         assert isinstance(dafunc(dask_input.index), dd.Index)
         assert_eq(
             dafunc(dask_input.index),
@@ -134,7 +139,8 @@ def test_ufunc(pandas_input, ufunc):
         )
 
     # applying Dask ufunc to normal Series triggers computation
-    with pytest.warns(None):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
         # some (da.log) cause warnings
         assert isinstance(dafunc(pandas_input.index), pd.Index)
         assert_eq(dafunc(pandas_input), npfunc(pandas_input))
@@ -143,12 +149,10 @@ def test_ufunc(pandas_input, ufunc):
 @pytest.mark.parametrize(
     "ufunc",
     [
-        pytest.param(
-            "isreal", marks=pytest.mark.filterwarnings("ignore::FutureWarning")
-        ),
+        "isreal",
         "iscomplex",
-        pytest.param("real", marks=pytest.mark.filterwarnings("ignore::FutureWarning")),
-        pytest.param("imag", marks=pytest.mark.filterwarnings("ignore::FutureWarning")),
+        "real",
+        "imag",
         "angle",
         "fix",
         "i0",
@@ -156,16 +160,18 @@ def test_ufunc(pandas_input, ufunc):
         "nan_to_num",
     ],
 )
-def test_ufunc_array_wrap(ufunc):
+def test_ufunc_wrapped(ufunc):
     """
     some np.ufuncs doesn't call __array_wrap__
     (or __array_ufunc__ starting from numpy v.1.13.0), it should work as below
 
-    - da.ufunc(dd.Series) => dd.Series
+    - da.ufunc(dd.Series) => da.Array
     - da.ufunc(pd.Series) => np.ndarray
     - np.ufunc(dd.Series) => np.ndarray
     - np.ufunc(pd.Series) => np.ndarray
     """
+    from dask.array.utils import assert_eq as da_assert_eq
+
     if ufunc == "fix":
         pytest.skip("fix calls floor in a way that we do not yet support")
 
@@ -178,8 +184,8 @@ def test_ufunc_array_wrap(ufunc):
     ds = dd.from_pandas(s, 3)
 
     # applying Dask ufunc doesn't trigger computation
-    assert isinstance(dafunc(ds), dd.Series)
-    assert_eq(dafunc(ds), pd.Series(npfunc(s), index=s.index))
+    assert isinstance(dafunc(ds), da.Array)
+    da_assert_eq(dafunc(ds), npfunc(s))
 
     assert isinstance(npfunc(ds), np.ndarray)
     np.testing.assert_equal(npfunc(ds), npfunc(s))
@@ -198,16 +204,36 @@ def test_ufunc_array_wrap(ufunc):
     ddf = dd.from_pandas(df, 3)
 
     # applying Dask ufunc doesn't trigger computation
-    assert isinstance(dafunc(ddf), dd.DataFrame)
-    # result may be read-only ndarray
-    exp = pd.DataFrame(npfunc(df).copy(), columns=df.columns, index=df.index)
-    assert_eq(dafunc(ddf), exp)
+    assert isinstance(dafunc(ddf), da.Array)
+    da_assert_eq(dafunc(ddf), npfunc(df))
 
     assert isinstance(npfunc(ddf), np.ndarray)
     np.testing.assert_array_equal(npfunc(ddf), npfunc(df))
 
     assert isinstance(dafunc(df), np.ndarray)
     np.testing.assert_array_equal(dafunc(df), npfunc(df))
+
+
+def test_ufunc_wrapped_not_implemented():
+    s = pd.Series(
+        np.random.randint(1, 100, size=20), index=list("abcdefghijklmnopqrst")
+    )
+    ds = dd.from_pandas(s, 3)
+    with pytest.raises(NotImplementedError, match="`repeat` is not implemented"):
+        np.repeat(ds, 10)
+
+    df = pd.DataFrame(
+        {
+            "A": np.random.randint(1, 100, size=20),
+            "B": np.random.randint(1, 100, size=20),
+            "C": np.abs(np.random.randn(20)),
+        },
+        index=list("abcdefghijklmnopqrst"),
+    )
+    ddf = dd.from_pandas(df, 3)
+
+    with pytest.raises(NotImplementedError, match="`repeat` is not implemented"):
+        np.repeat(ddf, 10)
 
 
 _UFUNCS_2ARG = [
@@ -249,7 +275,6 @@ _UFUNCS_2ARG = [
     ],
 )
 def test_ufunc_with_2args(ufunc, make_pandas_input):
-
     dafunc = getattr(da, ufunc)
     npfunc = getattr(np, ufunc)
 
@@ -298,7 +323,6 @@ def test_ufunc_with_2args(ufunc, make_pandas_input):
     ],
 )
 def test_clip(pandas, min, max):
-
     dask = dd.from_pandas(pandas, 3)
     pandas_type = pandas.__class__
     dask_type = dask.__class__
@@ -331,12 +355,14 @@ def test_frame_ufunc_out(ufunc):
     ddf_out_np = dd.from_pandas(df_out, 3)
     ddf_out_da = dd.from_pandas(df_out, 3)
 
-    with pytest.warns(None):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
         npfunc(ddf, out=ddf_out_np)
         dafunc(ddf, out=ddf_out_da)
         assert_eq(ddf_out_np, ddf_out_da)
 
-    with pytest.warns(None):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
         expected = pd.DataFrame(npfunc(input_matrix), columns=["A", "B"])
         assert_eq(ddf_out_np, expected)
 
@@ -427,6 +453,10 @@ def test_mixed_types(ufunc, arg1, arg2):
     assert_eq(dafunc(arg2, arg1), npfunc(arg2, arg1))
 
 
+@pytest.mark.skipif(
+    dd._dask_expr_enabled(),
+    reason="doesn't work at the moment, all return not implemented",
+)
 @pytest.mark.parametrize("ufunc", _UFUNCS_2ARG)
 @pytest.mark.parametrize(
     "pandas,darray",
@@ -490,8 +520,7 @@ def test_ufunc_with_reduction(redfunc, ufunc, pandas):
     np_ufunc = getattr(np, ufunc)
 
     if (
-        PANDAS_GT_120
-        and (redfunc == "prod")
+        redfunc == "prod"
         and ufunc in ["conj", "square", "negative", "absolute"]
         and isinstance(pandas, pd.DataFrame)
     ):
@@ -501,8 +530,17 @@ def test_ufunc_with_reduction(redfunc, ufunc, pandas):
         # (instead of being applied on 2D ndarray that was converted to float)
         pytest.xfail("'prod' overflowing with integer columns in pandas 1.2.0")
 
-    with pytest.warns(None):
-        assert isinstance(np_redfunc(dask), (dd.DataFrame, dd.Series, dd.core.Scalar))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        warnings.simplefilter("ignore", FutureWarning)
+        if dd._dask_expr_enabled():
+            import dask_expr as dx
+
+            assert isinstance(np_redfunc(dask), (dd.DataFrame, dd.Series, dx.Scalar))
+        else:
+            assert isinstance(
+                np_redfunc(dask), (dd.DataFrame, dd.Series, dd.core.Scalar)
+            )
         assert_eq(np_redfunc(np_ufunc(dask)), np_redfunc(np_ufunc(pandas)))
 
 
